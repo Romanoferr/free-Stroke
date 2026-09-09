@@ -1,0 +1,23 @@
+{
+  "runtimeTarget": {
+    "name": ".NETCoreApp,Version=v9.0",
+    "signature": ""
+  },
+  "compilationOptions": {},
+  "targets": {
+    ".NETCoreApp,Version=v9.0": {
+      "S1.Overlay/1.0.0": {
+        "runtime": {
+          "S1.Overlay.dll": {}
+        }
+      }
+    }
+  },
+  "libraries": {
+    "S1.Overlay/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    }
+  }
+}

@@ -1,0 +1,26 @@
+﻿<Window x:Class="S1.Overlay.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="S1 Overlay Spike" WindowStyle="None" AllowsTransparency="True"
+        Background="Transparent" Topmost="True" ShowInTaskbar="False"
+        ResizeMode="NoResize" ShowActivated="False">
+    <Grid>
+        <!-- Marca de teste: prova transparência (desktop visível ao redor) -->
+        <Border Width="420" Height="200" HorizontalAlignment="Center" VerticalAlignment="Center"
+                BorderBrush="Red" BorderThickness="6" Background="#2200FF00">
+            <TextBlock Text="S1: SE VOCE LE ISTO SOBRE SEU APP, O OVERLAY FUNCIONA"
+                       Foreground="Red" FontSize="20" TextWrapping="Wrap"
+                       HorizontalAlignment="Center" VerticalAlignment="Center" TextAlignment="Center"/>
+        </Border>
+        <!-- Painel de controle do spike (canto superior esquerdo) -->
+        <StackPanel Orientation="Vertical" HorizontalAlignment="Left" VerticalAlignment="Top"
+                    Margin="16" Background="#EEFFFFFF">
+            <TextBlock x:Name="StatusText" Text="Modo: DESENHO (clicavel)" FontWeight="Bold" Margin="8"/>
+            <TextBlock x:Name="TierText" Text="Render tier: ?" Margin="8,0,8,8"/>
+            <Button Content="Alternar click-through (D/I)" Click="OnToggle" Margin="8" Padding="8,4"/>
+            <Button Content="Reassert Topmost" Click="OnTopmost" Margin="8" Padding="8,4"/>
+            <Button Content="Fechar" Click="OnClose" Margin="8" Padding="8,4"/>
+            <TextBlock x:Name="LogText" Text="" Margin="8" FontFamily="Consolas" FontSize="11"/>
+        </StackPanel>
+    </Grid>
+</Window>
