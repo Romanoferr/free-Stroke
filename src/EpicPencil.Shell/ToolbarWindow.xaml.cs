@@ -45,6 +45,13 @@ public partial class ToolbarWindow : Window
         }
         state.StateChanged += RefreshStatus;
         PreviewKeyDown += OnKey;
+        // REQ2: fechar a toolbar encerra o processo (não minimiza para o nada —
+        // não há tray nesta versão; fechamento = encerramento completo).
+        Closed += (_, _) =>
+        {
+            Log.Info("toolbar fechada → shutdown completo");
+            Application.Current.Shutdown();
+        };
         ToolTip = $"Log: {Log.Path}"; // onde debugar o que aconteceu
         RefreshStatus();
     }
@@ -54,6 +61,8 @@ public partial class ToolbarWindow : Window
     private void OnToolMarker(object sender, RoutedEventArgs e) => _state.SetTool(ToolKind.Highlighter);
     private void OnToolLine(object sender, RoutedEventArgs e) => _state.SetTool(ToolKind.Line);
     private void OnToolArrow(object sender, RoutedEventArgs e) => _state.SetTool(ToolKind.Arrow);
+    private void OnToolSelect(object sender, RoutedEventArgs e) => _state.SetTool(ToolKind.Select);
+    private void OnDeleteScreen(object sender, RoutedEventArgs e) => _state.DeleteSelectedScreen();
     private void OnToolEraser(object sender, RoutedEventArgs e) => _state.SetTool(ToolKind.EraserStroke);
     private void OnWidthS(object sender, RoutedEventArgs e) => _state.SetActiveWidthPreset(0);
     private void OnWidthM(object sender, RoutedEventArgs e) => _state.SetActiveWidthPreset(1);
@@ -63,6 +72,11 @@ public partial class ToolbarWindow : Window
     private void OnClear(object sender, RoutedEventArgs e) => _state.Clear();
     private void OnMode(object sender, RoutedEventArgs e) => _state.SetDrawMode(!_state.IsDrawMode);
     private void OnHide(object sender, RoutedEventArgs e) => _state.SetInkVisible(!_state.InkVisible);
+    private void OnExit(object sender, RoutedEventArgs e)
+    {
+        Log.Info("saída via botão Sair → shutdown completo");
+        Application.Current.Shutdown();
+    }
     private void OnFlash(object sender, RoutedEventArgs e) => _overlay.FlashTest();
     private void OnWho(object sender, RoutedEventArgs e)
     {
@@ -90,6 +104,8 @@ public partial class ToolbarWindow : Window
         else if (e.Key == Key.H && !Keyboard.Modifiers.HasFlag(ModifierKeys.Control)) _state.SetTool(ToolKind.Highlighter);
         else if (e.Key == Key.L) _state.SetTool(ToolKind.Line);
         else if (e.Key == Key.S) _state.SetTool(ToolKind.Arrow);
+        else if (e.Key == Key.V) _state.SetTool(ToolKind.Select);
+        else if (e.Key == Key.Delete) _state.DeleteSelectedScreen();
         else if (e.Key == Key.E) _state.SetTool(ToolKind.EraserStroke);
         else if (e.Key == Key.D1) _state.SetActiveWidthPreset(0);
         else if (e.Key == Key.D2) _state.SetActiveWidthPreset(1);
@@ -112,11 +128,13 @@ public partial class ToolbarWindow : Window
         MarkerButton.FontWeight = _state.ActiveTool == ToolKind.Highlighter ? FontWeights.Bold : FontWeights.Normal;
         LineButton.FontWeight = _state.ActiveTool == ToolKind.Line ? FontWeights.Bold : FontWeights.Normal;
         ArrowButton.FontWeight = _state.ActiveTool == ToolKind.Arrow ? FontWeights.Bold : FontWeights.Normal;
+        SelectButton.FontWeight = _state.ActiveTool == ToolKind.Select ? FontWeights.Bold : FontWeights.Normal;
         EraserButton.FontWeight = _state.ActiveTool == ToolKind.EraserStroke ? FontWeights.Bold : FontWeights.Normal;
         var c = _state.ActiveColor;
         StatusText.Text = $"modo={(_state.IsDrawMode ? "desenho" : "interagir")} " +
             $"tool={_state.ActiveTool} cor=#{c.R:X2}{c.G:X2}{c.B:X2} w={_state.ActiveWidth:F1} " +
             $"strokes={_state.StrokeCount} pts={_state.PointCount} " +
+            $"caps={_state.ScreenCount} sel={_state.SelectedScreenId?.ToString() ?? "-"} " +
             $"p50={_overlay.SurfaceControl.ProcessingP50Ms:F2}ms";
     }
 }

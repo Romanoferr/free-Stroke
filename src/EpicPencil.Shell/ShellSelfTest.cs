@@ -1,6 +1,6 @@
 // Self-test headless da Shell (sem HWND visível: DrawingVisual renderiza
-// offscreen na thread STA). Aceite do incremento: 500 strokes sintéticos,
-// undo/redo/erase consistentes e p50 de processamento < 3 ms.
+// offscreen na thread STA). RunSync: strokes/undo/erase/hit-test. RunAsync:
+// capturas (flow fake). RunWindows: janelas reais breves (overlay+toolbar).
 
 using System.Windows;
 using System.Windows.Media;
@@ -11,6 +11,13 @@ namespace EpicPencil.Shell;
 
 internal static class ShellSelfTest
 {
+    // Flow fake: bytes sintéticos (sem tela real) p/ testar marquee→modelo→visual.
+    private sealed class FakeFlow : IScreenCaptureFlow
+    {
+        public Task<CapturedImage?> CaptureRegionDipAsync(RectD region) =>
+            Task.FromResult<CapturedImage?>(new CapturedImage(8, 6, new byte[4 * 8 * 6]));
+    }
+
     public static int Run()
     {
         var failures = new List<string>();
@@ -19,7 +26,15 @@ internal static class ShellSelfTest
             Console.WriteLine($"{(ok ? "PASS" : "FAIL")} {name}");
             if (!ok) failures.Add(name);
         }
+        RunSync(Check);
+        RunAsync(Check).GetAwaiter().GetResult();
+        RunWindows(Check);
+        Console.WriteLine(failures.Count == 0 ? "SHELL SELFTEST OK" : $"FALHOU: {failures.Count}");
+        return failures.Count == 0 ? 0 : 1;
+    }
 
+    private static void RunSync(Action<bool, string> Check)
+    {
         var state = new AppState();
         var surface = new InkSurface();
         surface.Attach(state);
@@ -114,7 +129,45 @@ internal static class ShellSelfTest
         state.SetTool(ToolKind.Pen);
         state.SetTool(ToolKind.Highlighter);
         Check(state.ActiveColor.Equals(new Rgba(0, 0, 255)), "cor memorizada por ferramenta");
+    }
 
+    private static async Task RunAsync(Action<bool, string> Check)
+    {
+        // REQ1: marquee→captura→move→delete com undo, via flow fake.
+        var state = new AppState();
+        var surface = new InkSurface();
+        surface.Attach(state);
+        surface.CaptureFlow = new FakeFlow();
+        surface.Measure(new Size(1920, 1080));
+        surface.Arrange(new Rect(0, 0, 1920, 1080));
+
+        await surface.SimulateMarqueeAsync(new RectD(100, 100, 200, 150));
+        Check(state.ScreenCount == 1, "marquee cria captura");
+        Check(state.SelectedScreenId.HasValue, "captura nova auto-selecionada");
+        int id = state.SelectedScreenId!.Value;
+        Check(state.Screens.Count == 1 && state.Screens[0].PixelWidth == 8, "bytes do flow preservados");
+
+        Check(state.MoveScreen(id, 300, 300), "move commita");
+        Check(state.Screens[0].X == 300 && state.Screens[0].Y == 300, "posição atualizada");
+        state.Undo();
+        Check(state.Screens[0].X == 100 && state.Screens[0].Y == 100, "undo do move volta à origem");
+        state.Redo();
+        Check(state.Screens[0].X == 300, "redo do move reaplica");
+
+        Check(state.DeleteSelectedScreen(), "delete remove selecionada");
+        Check(state.ScreenCount == 0, "zero capturas após delete");
+        state.Undo();
+        Check(state.ScreenCount == 1, "undo do delete restaura");
+
+        // Captura GDI real (32x32 no canto): prova BitBlt/GetDIBits sem tela fake.
+        // ConfigureAwait(false): o Run roda bloqueado no dispatcher (GetResult).
+        var real = await Task.Run(() => ScreenCapture.CaptureRegionPx(0, 0, 32, 32)).ConfigureAwait(false);
+        Check(real is not null && real.Bgra.Length == 4 * 32 * 32, "BitBlt real 32x32 funciona");
+        Check(ScreenCapture.CaptureRegionPx(0, 0, 99999, 10) is null, "rect absurdo rejeitado");
+    }
+
+    private static void RunWindows(Action<bool, string> Check)
+    {
         // REQ1–REQ3: regiões. Overlay cobre a WORK AREA (nunca a taskbar) e a
         // toolbar é owned (sempre acima do overlay). Janelas reais: teste breve
         // e invisível (overlay transparente), fechadas em seguida.
@@ -133,8 +186,5 @@ internal static class ShellSelfTest
         Check(overlay.IsVisible && toolbar.IsVisible, "overlay+toolbar visíveis");
         toolbar.Close();
         overlay.Close();
-
-        Console.WriteLine(failures.Count == 0 ? "SHELL SELFTEST OK" : $"FALHOU: {failures.Count}");
-        return failures.Count == 0 ? 0 : 1;
     }
 }

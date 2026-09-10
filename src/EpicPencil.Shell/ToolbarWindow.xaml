@@ -11,6 +11,7 @@
             <Button x:Name="MarkerButton" Content="Marca (H)" Click="OnToolMarker" Margin="2" Padding="8,4"/>
             <Button x:Name="LineButton" Content="Linha (L)" Click="OnToolLine" Margin="2" Padding="8,4"/>
             <Button x:Name="ArrowButton" Content="Seta (S)" Click="OnToolArrow" Margin="2" Padding="8,4"/>
+            <Button x:Name="SelectButton" Content="Seleção (V)" Click="OnToolSelect" Margin="2" Padding="8,4"/>
             <Button x:Name="EraserButton" Content="Borracha (E)" Click="OnToolEraser" Margin="2" Padding="8,4"/>
         </StackPanel>
         <StackPanel Orientation="Horizontal">
@@ -20,9 +21,11 @@
             <Button Content="L (3)" Click="OnWidthL" Margin="2" Padding="8,4" ToolTip="Espessura grossa"/>
             <Button Content="Undo" Click="OnUndo" Margin="6,2,2,2" Padding="8,4"/>
             <Button Content="Redo" Click="OnRedo" Margin="2" Padding="8,4"/>
+            <Button Content="Apagar sel. (Del)" Click="OnDeleteScreen" Margin="2" Padding="8,4" ToolTip="Remove a captura selecionada (com undo)"/>
             <Button Content="Limpar (C)" Click="OnClear" Margin="2" Padding="8,4"/>
             <Button x:Name="ModeButton" Content="Interagir" Click="OnMode" Margin="2" Padding="8,4"/>
             <Button x:Name="HideButton" Content="Esconder (H)" Click="OnHide" Margin="2" Padding="8,4"/>
+            <Button Content="Sair" Click="OnExit" Margin="2" Padding="8,4" ToolTip="Encerra completamente a aplicação"/>
         </StackPanel>
         <StackPanel Orientation="Horizontal">
             <Button Content="Piscar overlay" Click="OnFlash" Margin="2" Padding="8,4" ToolTip="Diagnóstico: pinta a tela de vermelho por 400ms"/>

@@ -11,5 +11,6 @@ public enum ToolKind
     Highlighter,
     Line,
     Arrow,
-    EraserStroke
+    EraserStroke,
+    Select // seleção de região (captura) + mover captura; não produz stroke
 }

@@ -23,6 +23,8 @@ public sealed class SettingsV1
         [ToolKind.Highlighter] = new ToolPreset { Color = new Rgba(255, 235, 59), WidthDip = 18f },
         [ToolKind.Line] = new ToolPreset { Color = new Rgba(255, 0, 0), WidthDip = 4f },
         [ToolKind.Arrow] = new ToolPreset { Color = new Rgba(255, 0, 0), WidthDip = 5f },
+        [ToolKind.EraserStroke] = new ToolPreset { Color = new Rgba(0, 0, 0), WidthDip = 12f },
+        [ToolKind.Select] = new ToolPreset { Color = new Rgba(0, 120, 215), WidthDip = 1.5f },
     };
 
     public string ToggleDrawHotkey { get; set; } = "Alt+Shift+D";

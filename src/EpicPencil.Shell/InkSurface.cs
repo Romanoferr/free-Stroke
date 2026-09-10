@@ -25,8 +25,12 @@ namespace EpicPencil.Shell;
 public sealed class InkSurface : FrameworkElement
 {
     private readonly DrawingVisual _hit = new();
+    private readonly ContainerVisual _screens = new(); // capturas (ABAIXO da tinta: anota-se sobre a cópia)
     private readonly ContainerVisual _finalized = new();
     private readonly DrawingVisual _active = new();
+    private readonly DrawingVisual _selection = new();
+    private readonly Dictionary<int, DrawingVisual> _screenVisuals = new();
+    private readonly Dictionary<int, ImageSource> _screenImages = new();
     private readonly Dictionary<int, DrawingVisual> _map = new();
     private readonly double[] _samples = new double[128];
     private int _sampleCount;
@@ -41,20 +45,34 @@ public sealed class InkSurface : FrameworkElement
     private double _lastStylusMs = double.NaN;
     private DateTime _lastSlowWarn = DateTime.MinValue;
 
+    // Select (REQ1): marquee cria captura; arrasto sobre captura existente move.
+    private bool _marqueeing;
+    private Pt _marqueeAnchor;
+    private ScreenObject? _movingScreen;
+    private Pt _moveGrabOffset;
+    private Pt _moveCurrent;
+    private bool _capturing;
+
+    public IScreenCaptureFlow? CaptureFlow { get; set; }
+
     public InkSurface()
     {
         AddVisualChild(_hit);
+        AddVisualChild(_screens);
         AddVisualChild(_finalized);
         AddVisualChild(_active);
+        AddVisualChild(_selection);
         Focusable = false;
     }
 
-    protected override int VisualChildrenCount => 3;
+    protected override int VisualChildrenCount => 5;
     protected override Visual GetVisualChild(int index) => index switch
     {
         0 => _hit,
-        1 => _finalized,
-        _ => _active,
+        1 => _screens,
+        2 => _finalized,
+        3 => _active,
+        _ => _selection,
     };
 
     protected override void OnRenderSizeChanged(SizeChangedInfo sizeInfo)
@@ -103,6 +121,31 @@ public sealed class InkSurface : FrameworkElement
                     _finalized.Children.Remove(visual);
             ClearPreview();
         };
+        state.ScreenAdded += screen =>
+        {
+            var image = WpfStrokeRenderer.CreateBitmap(screen.Bgra, screen.PixelWidth, screen.PixelHeight);
+            var visual = WpfStrokeRenderer.BuildScreenVisual(screen, image);
+            _screens.Children.Add(visual);
+            _screenVisuals[screen.Id] = visual;
+            _screenImages[screen.Id] = image;
+            ClearPreview();
+        };
+        state.ScreensRemoved += list =>
+        {
+            foreach (var s in list)
+            {
+                if (_screenVisuals.Remove(s.Id, out var visual))
+                    _screens.Children.Remove(visual);
+                _screenImages.Remove(s.Id);
+            }
+            ClearPreview();
+        };
+        state.ScreenMoved += screen =>
+        {
+            if (_screenVisuals.TryGetValue(screen.Id, out var visual))
+                visual.Offset = new Vector(screen.X, screen.Y);
+        };
+        state.StateChanged += RefreshSelection;
     }
 
     // Caminho de teste headless: mesmo commit do gesto real, sem HWND/eventos.
@@ -209,6 +252,27 @@ public sealed class InkSurface : FrameworkElement
     {
         if (_state is null) return;
         Log.Info($"input begin tool={_state.ActiveTool} src={src} x={p.X:F0} y={p.Y:F0}");
+        if (_state.ActiveTool == ToolKind.Select)
+        {
+            if (_capturing) return; // captura em voo: gesto ignorado (sem deadlock)
+            var hit = PickScreen(p);
+            if (hit is not null)
+            {
+                _movingScreen = hit;
+                _moveGrabOffset = new Pt(p.X - hit.X, p.Y - hit.Y);
+                _moveCurrent = new Pt(hit.X, hit.Y);
+                _state.SelectScreen(hit.Id);
+                capture();
+            }
+            else
+            {
+                _marqueeing = true;
+                _marqueeAnchor = p;
+                _state.SelectScreen(null);
+                capture();
+            }
+            return;
+        }
         if (_state.ActiveTool == ToolKind.EraserStroke)
         {
             _erasing = true;
@@ -232,6 +296,23 @@ public sealed class InkSurface : FrameworkElement
     private void MoveAt(Pt p)
     {
         if (_state is null) return;
+        if (_movingScreen is not null)
+        {
+            // Arrasto ao vivo move SÓ o visual (Offset, sem re-render); o modelo
+            // commita no Up via MoveScreenCommand (undo puro, sem spam).
+            _moveCurrent = new Pt(p.X - _moveGrabOffset.X, p.Y - _moveGrabOffset.Y);
+            if (_screenVisuals.TryGetValue(_movingScreen.Id, out var visual))
+                visual.Offset = new Vector(_moveCurrent.X, _moveCurrent.Y);
+            // Highlight acompanha o visual (modelo só commita no Up).
+            WpfStrokeRenderer.RenderMarquee(_selection, new RectD(
+                _moveCurrent.X, _moveCurrent.Y, _movingScreen.WidthDip, _movingScreen.HeightDip));
+            return;
+        }
+        if (_marqueeing)
+        {
+            WpfStrokeRenderer.RenderMarquee(_active, NormalizeMarquee(_marqueeAnchor, p));
+            return;
+        }
         if (_erasing)
         {
             _state.EraseSegment(_lastErase, p);
@@ -260,6 +341,21 @@ public sealed class InkSurface : FrameworkElement
 
     private void EndAt(Pt p)
     {
+        if (_movingScreen is not null && _state is not null)
+        {
+            _state.MoveScreen(_movingScreen.Id, _moveCurrent.X, _moveCurrent.Y);
+            _movingScreen = null;
+        }
+        if (_marqueeing)
+        {
+            _marqueeing = false;
+            var rect = NormalizeMarquee(_marqueeAnchor, p);
+            // Preview do marquee fica até o commit limpar (ou cancela se mínimo).
+            if (rect.Width >= 4 && rect.Height >= 4)
+                _ = CommitMarqueeAsync(rect);
+            else
+                ClearPreview();
+        }
         if (_drawing && _state is not null)
         {
             _state.AddFreehand(_raw);
@@ -270,6 +366,57 @@ public sealed class InkSurface : FrameworkElement
         _drawing = false;
         _erasing = false;
         _shaping = false;
+    }
+
+    private async Task CommitMarqueeAsync(RectD rect)
+    {
+        if (_state is null || CaptureFlow is null || _capturing) return;
+        _capturing = true;
+        try
+        {
+            var img = await CaptureFlow.CaptureRegionDipAsync(rect);
+            if (img is null)
+            {
+                Log.Warn("marquee cancelado: captura falhou");
+                return;
+            }
+            _state.AddScreen(img.Bgra, img.PixelWidth, img.PixelHeight, rect);
+        }
+        catch (Exception ex) { Log.Error("falha no commit da captura", ex); }
+        finally { _capturing = false; ClearPreview(); }
+    }
+
+    // Caminho de teste: flow fake injeta bytes sintéticos (sem tela real).
+    public async Task SimulateMarqueeAsync(RectD rect)
+    {
+        if (_state is null || CaptureFlow is null) return;
+        var img = await CaptureFlow.CaptureRegionDipAsync(rect);
+        if (img is null) return;
+        _state.AddScreen(img.Bgra, img.PixelWidth, img.PixelHeight, rect);
+    }
+
+    private ScreenObject? PickScreen(Pt p)
+    {
+        if (_state is null) return null;
+        var all = _state.Screens;
+        for (int i = all.Count - 1; i >= 0; i--) // topo primeiro (z-order)
+            if (all[i].Contains(p)) return all[i];
+        return null;
+    }
+
+    private static RectD NormalizeMarquee(Pt a, Pt b) => new(
+        Math.Min(a.X, b.X), Math.Min(a.Y, b.Y),
+        Math.Abs(b.X - a.X), Math.Abs(b.Y - a.Y));
+
+    private void RefreshSelection()
+    {
+        if (_state?.SelectedScreenId is int id
+            && _state.Screens.FirstOrDefault(s => s.Id == id) is { } s)
+            WpfStrokeRenderer.RenderMarquee(_selection, s.Bounds); // mesmo tracejado do marquee
+        else
+        {
+            using var dc = _selection.RenderOpen(); // sem seleção: highlight vazio
+        }
     }
 
     private void ClearPreview()

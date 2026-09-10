@@ -9,6 +9,7 @@ public partial class OverlayWindow : Window
 {
     private readonly AppState _state;
     private IntPtr _hwnd;
+    private HwndSource? _source;
 
     public OverlayWindow(AppState state)
     {
@@ -17,6 +18,14 @@ public partial class OverlayWindow : Window
         Surface.Attach(state);
         SourceInitialized += OnSourceInitialized;
         Loaded += OnLoaded;
+        // REQ2: fechar QUALQUER janela = encerrar tudo (ShutdownMode explícito no App).
+        Closed += (_, _) =>
+        {
+            _source?.RemoveHook(WndHook);
+            _source = null;
+            Log.Info("overlay fechado → shutdown completo");
+            Application.Current.Shutdown();
+        };
         state.StateChanged += ApplyState;
         // Sonda de diagnóstico: prova se QUALQUER input (stylus ou mouse)
         // chega à janela, antes mesmo da superfície. Só Downs (baixa frequência).
@@ -73,7 +82,8 @@ public partial class OverlayWindow : Window
     {
         _hwnd = new WindowInteropHelper(this).Handle;
         OverlayBehavior.ApplyBaseStyles(_hwnd);
-        HwndSource.FromHwnd(_hwnd)?.AddHook(WndHook);
+        _source = HwndSource.FromHwnd(_hwnd);
+        _source?.AddHook(WndHook);
         ApplyState();
     }
 

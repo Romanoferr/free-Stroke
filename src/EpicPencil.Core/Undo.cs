@@ -11,6 +11,8 @@ public interface IDocCommand
     int RetainedPoints { get; }
     // Strokes tocados pelo comando — a Shell sincroniza os visuals sem rebuild.
     IReadOnlyList<Stroke> Affected { get; }
+    // Capturas tocadas. Default vazio: comandos de stroke não precisam mudar.
+    IReadOnlyList<ScreenObject> AffectedScreens => Array.Empty<ScreenObject>();
 }
 
 public sealed class AddStrokeCommand : IDocCommand

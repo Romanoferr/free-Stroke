@@ -4,7 +4,9 @@
 // (nunca carimba segmentos alfa — evita escurecer o overlap).
 // O backend de export (Skia, futuro) implementa a mesma StrokeSpec do Core.
 
+using System.Windows;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using EpicPencil.Core;
 
 namespace EpicPencil.Shell;
@@ -12,6 +14,44 @@ namespace EpicPencil.Shell;
 internal static class WpfStrokeRenderer
 {
     private static readonly Dictionary<(uint Color, float Width, float Opacity, ToolKind Tool), Pen> PenCache = new();
+    private static Pen? _marqueePen;
+
+    // Retângulo de seleção tracejado (marquee + highlight da captura ativa).
+    public static void RenderMarquee(DrawingVisual visual, RectD rect)
+    {
+        _marqueePen ??= CreateMarqueePen();
+        using var dc = visual.RenderOpen();
+        dc.DrawRectangle(null, _marqueePen,
+            new System.Windows.Rect(rect.X, rect.Y, rect.Width, rect.Height));
+    }
+
+    private static Pen CreateMarqueePen()
+    {
+        var brush = new SolidColorBrush(Colors.Red);
+        brush.Freeze();
+        var pen = new Pen(brush, 1.5) { DashStyle = DashStyles.Dash };
+        pen.Freeze();
+        return pen;
+    }
+
+    // Bitmap imutável da captura (conversão BGRA→WPF uma única vez; move usa Offset).
+    public static ImageSource CreateBitmap(byte[] bgra, int pixelWidth, int pixelHeight)
+    {
+        var bmp = BitmapSource.Create(pixelWidth, pixelHeight, 96, 96,
+            PixelFormats.Bgra32, null, bgra, 4 * pixelWidth);
+        bmp.Freeze();
+        return bmp;
+    }
+
+    // Visual da captura em (0,0)+Offset: mover = trocar Offset, sem re-render.
+    public static DrawingVisual BuildScreenVisual(ScreenObject s, ImageSource image)
+    {
+        var visual = new DrawingVisual();
+        using (var dc = visual.RenderOpen())
+            dc.DrawImage(image, new System.Windows.Rect(0, 0, s.WidthDip, s.HeightDip));
+        visual.Offset = new Vector(s.X, s.Y);
+        return visual;
+    }
 
     public static DrawingVisual BuildStrokeVisual(Stroke s)
     {

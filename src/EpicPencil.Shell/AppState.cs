@@ -14,6 +14,9 @@ public sealed class AppState
 
     public event Action<Stroke>? StrokeAdded;
     public event Action<IReadOnlyList<Stroke>>? StrokesRemoved;
+    public event Action<ScreenObject>? ScreenAdded;
+    public event Action<IReadOnlyList<ScreenObject>>? ScreensRemoved;
+    public event Action<ScreenObject>? ScreenMoved;
     public event Action? StateChanged;
 
     public ToolKind ActiveTool { get; private set; } = ToolKind.Pen;
@@ -54,6 +57,9 @@ public sealed class AppState
 
     public int StrokeCount => _doc.Count;
     public int PointCount => _doc.TotalPoints();
+    public int ScreenCount => _doc.ScreenCount;
+    public IReadOnlyList<ScreenObject> Screens => _doc.Screens;
+    public int? SelectedScreenId { get; private set; }
     public bool CanUndo => _undo.CanUndo;
     public bool CanRedo => _undo.CanRedo;
 
@@ -139,9 +145,24 @@ public sealed class AppState
     {
         if (!_undo.TryUndo(_doc, out var cmd) || cmd is null) { Log.Info("undo vazio"); return; }
         Log.Info($"undo {cmd.GetType().Name}");
-        // Undo de Add remove; undo de Erase/Clear restaura.
-        if (cmd is AddStrokeCommand) StrokesRemoved?.Invoke(cmd.Affected);
-        else foreach (var s in cmd.Affected) StrokeAdded?.Invoke(s);
+        switch (cmd)
+        {
+            case AddStrokeCommand: // undo de Add remove
+                StrokesRemoved?.Invoke(cmd.Affected);
+                break;
+            case AddScreenCommand:
+                ScreensRemoved?.Invoke(cmd.AffectedScreens);
+                if (SelectedScreenId.HasValue && cmd.AffectedScreens.Any(s => s.Id == SelectedScreenId))
+                    SelectedScreenId = null;
+                break;
+            case MoveScreenCommand:
+                foreach (var s in cmd.AffectedScreens) ScreenMoved?.Invoke(s);
+                break;
+            default: // undo de Erase/Clear/RemoveScreen restaura
+                foreach (var s in cmd.Affected) StrokeAdded?.Invoke(s);
+                foreach (var s in cmd.AffectedScreens) ScreenAdded?.Invoke(s);
+                break;
+        }
         StateChanged?.Invoke();
     }
 
@@ -149,9 +170,69 @@ public sealed class AppState
     {
         if (!_undo.TryRedo(_doc, out var cmd) || cmd is null) { Log.Info("redo vazio"); return; }
         Log.Info($"redo {cmd.GetType().Name}");
-        // Redo repete o Do original: Add adiciona, Erase/Clear remove.
-        if (cmd is AddStrokeCommand) foreach (var s in cmd.Affected) StrokeAdded?.Invoke(s);
-        else StrokesRemoved?.Invoke(cmd.Affected);
+        switch (cmd)
+        {
+            case AddStrokeCommand:
+                foreach (var s in cmd.Affected) StrokeAdded?.Invoke(s);
+                break;
+            case AddScreenCommand:
+                foreach (var s in cmd.AffectedScreens) ScreenAdded?.Invoke(s);
+                break;
+            case MoveScreenCommand:
+                foreach (var s in cmd.AffectedScreens) ScreenMoved?.Invoke(s);
+                break;
+            default: // redo repete o Do: Erase/Clear/RemoveScreen remove
+                if (cmd.Affected.Count > 0) StrokesRemoved?.Invoke(cmd.Affected);
+                if (cmd.AffectedScreens.Count > 0) ScreensRemoved?.Invoke(cmd.AffectedScreens);
+                break;
+        }
         StateChanged?.Invoke();
+    }
+
+    public void SelectScreen(int? id)
+    {
+        SelectedScreenId = id;
+        if (id.HasValue) Log.Info($"captura selecionada id={id}");
+        StateChanged?.Invoke();
+    }
+
+    public ScreenObject? AddScreen(byte[] bgra, int pixelWidth, int pixelHeight, RectD dipRect)
+    {
+        if (bgra.Length != 4 * pixelWidth * pixelHeight)
+        {
+            Log.Warn("captura descartada: bytes incompatíveis");
+            return null;
+        }
+        var screen = new ScreenObject(_doc.NextId(), dipRect.X, dipRect.Y,
+            dipRect.Width, dipRect.Height, pixelWidth, pixelHeight, bgra);
+        _undo.Execute(new AddScreenCommand(screen), _doc);
+        Log.Info($"captura id={screen.Id} {pixelWidth}x{pixelHeight}px em ({dipRect.X:F0},{dipRect.Y:F0})");
+        ScreenAdded?.Invoke(screen);
+        SelectScreen(screen.Id);
+        return screen;
+    }
+
+    public bool MoveScreen(int id, float x, float y)
+    {
+        var s = _doc.FindScreen(id);
+        if (s is null || (s.X == x && s.Y == y)) return false;
+        _undo.Execute(new MoveScreenCommand(s, s.X, s.Y, x, y), _doc);
+        Log.Info($"captura id={id} movida para ({x:F0},{y:F0})");
+        ScreenMoved?.Invoke(s);
+        StateChanged?.Invoke();
+        return true;
+    }
+
+    public bool DeleteSelectedScreen()
+    {
+        if (!SelectedScreenId.HasValue) return false;
+        var s = _doc.FindScreen(SelectedScreenId.Value);
+        if (s is null) { SelectedScreenId = null; return false; }
+        _undo.Execute(new RemoveScreenCommand(new[] { s }, _doc), _doc);
+        Log.Info($"captura id={s.Id} removida");
+        ScreensRemoved?.Invoke(new[] { s });
+        SelectedScreenId = null;
+        StateChanged?.Invoke();
+        return true;
     }
 }

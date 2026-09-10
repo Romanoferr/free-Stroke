@@ -47,3 +47,11 @@ When clicks never reach the overlay (`janela PreviewMouseDown/StylusDown` absent
 - A raw `FrameworkElement` (no `Background`) can miss visual hit-testing on empty areas. Defense in depth, in order: (1) `HitTestCore` override returning self, (2) `_hit`: full-bleed `Transparent`-brush rect visual (invisible but hittable) refreshed in `OnRenderSizeChanged`.
 - CAUTION: the simple `VisualTreeHelper.HitTest(visual, point)` overload calls `HitTestCore` directly and can PASS while real clicks still miss. The callback-based `HitTest` overload is closer to the `WM_NCHITTEST` path — but even it can pass headless while the live window misses. Ground truth is live-only: `ProbeHitTest` (`SendMessage WM_NCHITTEST`, expect `HTCLIENT=1`; `HTTRANSPARENT=-1` means pass-through) + `DescribeZOrder` (real rects via `GetWindowRect`, `vis`/`dis` flags, `>>OVERLAY<<` marker). Never declare hit-testing fixed without the live probe reading `HTCLIENT`.
 - **Alpha-zero drill-through**: on `UpdateLayeredWindow` (`AllowsTransparency`) windows the OS compositor hit-test consults the ALPHA BITMAP, not just `WM_NCHITTEST`/`WS_EX_TRANSPARENT`. Signature: z-order + `vis`/`dis` + rect all correct, direct `NCHITTEST=HTCLIENT`, yet `WindowFromPoint` returns the app below. Fix: alpha floor — full-bleed `#01000000` background (invisible, <1 LSB) so the bitmap is solid to the compositor. `WS_EX_TRANSPARENT` (interact mode) still passes through regardless of alpha.
+
+## Lifetime (REQ2: close means full exit)
+
+- `ShutdownMode="OnExplicitShutdown"` + `Closed` on EVERY window calls `Application.Current.Shutdown()`. Default `OnLastWindowClose` leaves chromeless windows (overlay) alive with no way to close them — the classic "badge stays on screen" bug.
+- Overlay `Closed` must `RemoveHook` the `HwndSource` hook (hygiene; OS would clean on exit, but explicit beats implicit).
+- WPF requires the owner SHOWN before `Owner = other` (else `InvalidOperationException`).
+- Validate shutdown e2e: launch exe, `CloseMainWindow()` (sends `WM_CLOSE`), assert process exits ≤10s with zero residuals. No tray in this version by design — closing = full exit, no background mode.
+- Future `RegisterHotKey` calls MUST pair with `UnregisterHotKey` on shutdown (no globals registered yet).

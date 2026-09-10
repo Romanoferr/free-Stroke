@@ -38,6 +38,7 @@ public partial class App : Application
             overlay.Show();
             toolbar.Owner = overlay;
             toolbar.Show();
+            overlay.SurfaceControl.CaptureFlow = new ScreenCaptureFlow(overlay, toolbar);
             Log.Info("overlay+toolbar exibidos");
         }
         base.OnStartup(e);
