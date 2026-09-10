@@ -251,7 +251,7 @@ interface ICommand { void Do(Document); void Undo(Document); } // AddStroke, Era
 
 ## 11. Estratégia de overlay (Windows)
 
-- **Janela:** 1 `OverlayWindow` fullscreen borderless por monitor (`WS_POPUP`, `WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW`, sem sombra/borda, `ShowInTaskbar=false`), cobrindo exatamente o `MonitorInfo.rcMonitor` do seu monitor.
+- **Janela:** 1 `OverlayWindow` fullscreen borderless por monitor (`WS_POPUP`, `WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW`, sem sombra/borda, `ShowInTaskbar=false`), cobrindo o `rcWork` do seu monitor (work area — **revisado de `rcMonitor` para `rcWork`**: a taskbar/appbars são área de interação do shell e o overlay nunca as cobre, REQ1–REQ3).
 - **Transparência:** layered window com alfa por pixel (`UpdateLayeredWindow` / composição DWM); fundo 100% transparente, só tinta + (opcional) cursor têm alfa.
 - **Always-on-top:** `SetWindowPos(HWND_TOPMOST)` + watchdog (timer 500 ms–1 s reasserindo se um app fullscreen roubar z-order; sem busy-loop).
 - **Click-through:** liga/desliga `WS_EX_TRANSPARENT` via `SetWindowLongPtr` + `SetWindowPos(FRAMECHANGED)` — transição instantânea, sem recriar janela.

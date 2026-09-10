@@ -115,6 +115,25 @@ internal static class ShellSelfTest
         state.SetTool(ToolKind.Highlighter);
         Check(state.ActiveColor.Equals(new Rgba(0, 0, 255)), "cor memorizada por ferramenta");
 
+        // REQ1–REQ3: regiões. Overlay cobre a WORK AREA (nunca a taskbar) e a
+        // toolbar é owned (sempre acima do overlay). Janelas reais: teste breve
+        // e invisível (overlay transparente), fechadas em seguida.
+        var state2 = new AppState();
+        var overlay = new OverlayWindow(state2);
+        var toolbar = new ToolbarWindow(state2, overlay);
+        overlay.Show();
+        toolbar.Owner = overlay; // WPF: dono precisa estar exibido antes
+        toolbar.Show();
+        overlay.Dispatcher.Invoke(() => { }, System.Windows.Threading.DispatcherPriority.Loaded);
+        var work = System.Windows.SystemParameters.WorkArea;
+        Check(Math.Abs(overlay.Left - work.Left) < 1 && Math.Abs(overlay.Top - work.Top) < 1 &&
+            Math.Abs(overlay.Width - work.Width) < 1 && Math.Abs(overlay.Height - work.Height) < 1,
+            $"overlay = work area ({overlay.Width:F0}x{overlay.Height:F0}@{overlay.Left:F0},{overlay.Top:F0})");
+        Check(ReferenceEquals(toolbar.Owner, overlay), "toolbar owned (sempre acima do overlay)");
+        Check(overlay.IsVisible && toolbar.IsVisible, "overlay+toolbar visíveis");
+        toolbar.Close();
+        overlay.Close();
+
         Console.WriteLine(failures.Count == 0 ? "SHELL SELFTEST OK" : $"FALHOU: {failures.Count}");
         return failures.Count == 0 ? 0 : 1;
     }

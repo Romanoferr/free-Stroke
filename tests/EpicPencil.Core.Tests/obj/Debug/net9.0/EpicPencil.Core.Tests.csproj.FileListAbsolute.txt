@@ -100,3 +100,4 @@ C:\Users\roman\Projects\epic-pencil\tests\EpicPencil.Core.Tests\obj\Debug\net9.0
 C:\Users\roman\Projects\epic-pencil\tests\EpicPencil.Core.Tests\obj\Debug\net9.0\EpicPencil.Core.Tests.pdb
 C:\Users\roman\Projects\epic-pencil\tests\EpicPencil.Core.Tests\obj\Debug\net9.0\EpicPencil.Core.Tests.genruntimeconfig.cache
 C:\Users\roman\Projects\epic-pencil\tests\EpicPencil.Core.Tests\obj\Debug\net9.0\ref\EpicPencil.Core.Tests.dll
+C:\Users\roman\Projects\epic-pencil\tests\EpicPencil.Core.Tests\obj\Debug\net9.0\EpicPencil.Core.Tests.sourcelink.json

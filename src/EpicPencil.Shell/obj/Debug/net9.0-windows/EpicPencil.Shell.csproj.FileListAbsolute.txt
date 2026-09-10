@@ -27,3 +27,4 @@ C:\Users\roman\Projects\epic-pencil\src\EpicPencil.Shell\obj\Debug\net9.0-window
 C:\Users\roman\Projects\epic-pencil\src\EpicPencil.Shell\obj\Debug\net9.0-windows\EpicPencil.Shell.pdb
 C:\Users\roman\Projects\epic-pencil\src\EpicPencil.Shell\obj\Debug\net9.0-windows\EpicPencil.Shell.genruntimeconfig.cache
 C:\Users\roman\Projects\epic-pencil\src\EpicPencil.Shell\obj\Debug\net9.0-windows\ref\EpicPencil.Shell.dll
+C:\Users\roman\Projects\epic-pencil\src\EpicPencil.Shell\obj\Debug\net9.0-windows\EpicPencil.Shell.sourcelink.json

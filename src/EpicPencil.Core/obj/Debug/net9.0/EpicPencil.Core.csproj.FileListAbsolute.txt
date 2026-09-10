@@ -9,3 +9,4 @@ C:\Users\roman\Projects\epic-pencil\src\EpicPencil.Core\obj\Debug\net9.0\EpicPen
 C:\Users\roman\Projects\epic-pencil\src\EpicPencil.Core\obj\Debug\net9.0\refint\EpicPencil.Core.dll
 C:\Users\roman\Projects\epic-pencil\src\EpicPencil.Core\obj\Debug\net9.0\EpicPencil.Core.pdb
 C:\Users\roman\Projects\epic-pencil\src\EpicPencil.Core\obj\Debug\net9.0\ref\EpicPencil.Core.dll
+C:\Users\roman\Projects\epic-pencil\src\EpicPencil.Core\obj\Debug\net9.0\EpicPencil.Core.sourcelink.json

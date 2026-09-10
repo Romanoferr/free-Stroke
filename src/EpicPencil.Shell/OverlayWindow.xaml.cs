@@ -79,12 +79,15 @@ public partial class OverlayWindow : Window
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
-        // Fullscreen manual (WPF proíbe ShowActivated=False + Maximized).
-        // Multi-monitor (1 janela por monitor) entra no S4; aqui: monitor primário.
-        Left = 0; Top = 0;
-        Width = SystemParameters.PrimaryScreenWidth;
-        Height = SystemParameters.PrimaryScreenHeight;
-        Log.Info($"overlay bounds={Width:F0}x{Height:F0} monitores={OverlayBehavior.MonitorCount()} " +
+        // Área de DESENHO = WORK AREA (tela menos taskbar/appbars reservadas).
+        // Regra de regiões (REQ3): a taskbar é área de INTERAÇÃO do shell — o
+        // overlay nunca a cobre, então ela segue 100% funcional mesmo em modo
+        // desenho. Fullscreen anterior (rcMonitor) engolia os cliques dela.
+        // Multi-monitor (1 overlay por monitor, cada um no seu rcWork) entra no S4.
+        var work = SystemParameters.WorkArea;
+        Left = work.Left; Top = work.Top;
+        Width = work.Width; Height = work.Height;
+        Log.Info($"overlay bounds={Width:F0}x{Height:F0}@{Left:F0},{Top:F0} monitores={OverlayBehavior.MonitorCount()} " +
             $"topmost={Topmost} {OverlayBehavior.Describe(_hwnd)} " +
             $"tier={System.Windows.Media.RenderCapability.Tier >> 16}");
         if (OverlayBehavior.MonitorCount() > 1)

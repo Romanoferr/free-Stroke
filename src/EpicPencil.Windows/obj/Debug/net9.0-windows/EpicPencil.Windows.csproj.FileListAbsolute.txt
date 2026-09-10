@@ -9,3 +9,4 @@ C:\Users\roman\Projects\epic-pencil\src\EpicPencil.Windows\obj\Debug\net9.0-wind
 C:\Users\roman\Projects\epic-pencil\src\EpicPencil.Windows\obj\Debug\net9.0-windows\refint\EpicPencil.Windows.dll
 C:\Users\roman\Projects\epic-pencil\src\EpicPencil.Windows\obj\Debug\net9.0-windows\EpicPencil.Windows.pdb
 C:\Users\roman\Projects\epic-pencil\src\EpicPencil.Windows\obj\Debug\net9.0-windows\ref\EpicPencil.Windows.dll
+C:\Users\roman\Projects\epic-pencil\src\EpicPencil.Windows\obj\Debug\net9.0-windows\EpicPencil.Windows.sourcelink.json

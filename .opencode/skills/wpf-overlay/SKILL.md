@@ -11,6 +11,13 @@ description: Win32 overlay recipe for Epic Pencil (transparent fullscreen, click
 - Fullscreen set manually in code (`Left/Top/Width/Height` from screen bounds). WPF throws if `ShowActivated=False` combines with `WindowState=Maximized`.
 - One window per monitor at its exact `rcMonitor` (never one spanning window — breaks mixed DPI).
 
+## Interaction regions (REQ1–REQ3: draw area vs interaction area)
+
+- **Draw area = overlay ∩ work area.** Size the overlay to `SystemParameters.WorkArea` (WPF) / per-monitor `rcWork` (Win32), NEVER full `rcMonitor`: the taskbar/appbars are shell-owned interaction areas and must keep working in draw mode. Annotating over the taskbar is explicitly out of scope.
+- **Interaction areas = real windows above the overlay.** Toolbar is a separate `Topmost` window with `Owner = overlay` (WPF requires the owner SHOWN before assigning `Owner`, else `InvalidOperationException`) — OS-guaranteed above, draggable by its native titlebar to any position; its clicks never reach the ink layer by construction (separate HWND on top).
+- No `HTTRANSPARENT` hole-punching needed while interactive surfaces are separate windows. If an interactive control ever lives INSIDE the overlay window, punch holes via `WM_NCHITTEST → HTTRANSPARENT` per-rect instead of toggling `WS_EX_TRANSPARENT`.
+- Alpha floor: full-bleed `#01000000` background behind the ink surface (see previous section).
+
 ## Win32 styles (`OverlayBehavior`)
 
 - Base: `WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE`, clear `WS_EX_TRANSPARENT` (start clickable).
