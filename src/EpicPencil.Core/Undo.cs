@@ -9,6 +9,8 @@ public interface IDocCommand
     void Do(Document doc);
     void Undo(Document doc);
     int RetainedPoints { get; }
+    // Strokes tocados pelo comando — a Shell sincroniza os visuals sem rebuild.
+    IReadOnlyList<Stroke> Affected { get; }
 }
 
 public sealed class AddStrokeCommand : IDocCommand
@@ -16,6 +18,7 @@ public sealed class AddStrokeCommand : IDocCommand
     private readonly Stroke _stroke;
     public AddStrokeCommand(Stroke stroke) => _stroke = stroke;
     public int RetainedPoints => _stroke.PointCount;
+    public IReadOnlyList<Stroke> Affected => [_stroke];
     public void Do(Document doc) => doc.Add(_stroke);
     public void Undo(Document doc) => doc.Remove(_stroke);
 }
@@ -38,6 +41,7 @@ public sealed class EraseStrokesCommand : IDocCommand
             return n;
         }
     }
+    public IReadOnlyList<Stroke> Affected => _removed.Select(r => r.Stroke).ToList();
     public void Do(Document doc)
     {
         foreach (var r in _removed) doc.Remove(r.Stroke);
@@ -71,6 +75,7 @@ public sealed class ClearAllCommand : IDocCommand
             return n;
         }
     }
+    public IReadOnlyList<Stroke> Affected => _snapshot;
     public void Do(Document doc) => doc.Clear();
     public void Undo(Document doc)
     {
@@ -101,25 +106,31 @@ public sealed class UndoStack
         EnforceCaps();
     }
 
-    public bool TryUndo(Document doc)
+    public bool TryUndo(Document doc) => TryUndo(doc, out _);
+
+    public bool TryUndo(Document doc, out IDocCommand? undone)
     {
-        if (_undo.Count == 0) return false;
+        if (_undo.Count == 0) { undone = null; return false; }
         var cmd = _undo[^1];
         _undo.RemoveAt(_undo.Count - 1);
         cmd.Undo(doc);
         _retainedPoints -= cmd.RetainedPoints;
         _redo.Push(cmd);
+        undone = cmd;
         return true;
     }
 
-    public bool TryRedo(Document doc)
+    public bool TryRedo(Document doc) => TryRedo(doc, out _);
+
+    public bool TryRedo(Document doc, out IDocCommand? redone)
     {
-        if (_redo.Count == 0) return false;
+        if (_redo.Count == 0) { redone = null; return false; }
         var cmd = _redo.Pop();
         cmd.Do(doc);
         _undo.Add(cmd);
         _retainedPoints += cmd.RetainedPoints;
         EnforceCaps();
+        redone = cmd;
         return true;
     }
 

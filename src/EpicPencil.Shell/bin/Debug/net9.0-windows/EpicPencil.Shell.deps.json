@@ -1,0 +1,53 @@
+{
+  "runtimeTarget": {
+    "name": ".NETCoreApp,Version=v9.0",
+    "signature": ""
+  },
+  "compilationOptions": {},
+  "targets": {
+    ".NETCoreApp,Version=v9.0": {
+      "EpicPencil.Shell/1.0.0": {
+        "dependencies": {
+          "EpicPencil.Core": "1.0.0",
+          "EpicPencil.Windows": "1.0.0"
+        },
+        "runtime": {
+          "EpicPencil.Shell.dll": {}
+        }
+      },
+      "EpicPencil.Core/1.0.0": {
+        "runtime": {
+          "EpicPencil.Core.dll": {
+            "assemblyVersion": "1.0.0.0",
+            "fileVersion": "1.0.0.0"
+          }
+        }
+      },
+      "EpicPencil.Windows/1.0.0": {
+        "runtime": {
+          "EpicPencil.Windows.dll": {
+            "assemblyVersion": "1.0.0.0",
+            "fileVersion": "1.0.0.0"
+          }
+        }
+      }
+    }
+  },
+  "libraries": {
+    "EpicPencil.Shell/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "EpicPencil.Core/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "EpicPencil.Windows/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    }
+  }
+}

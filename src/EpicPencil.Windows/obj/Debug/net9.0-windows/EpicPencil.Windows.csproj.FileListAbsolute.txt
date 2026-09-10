@@ -1,0 +1,11 @@
+C:\Users\roman\Projects\epic-pencil\src\EpicPencil.Windows\bin\Debug\net9.0-windows\EpicPencil.Windows.deps.json
+C:\Users\roman\Projects\epic-pencil\src\EpicPencil.Windows\bin\Debug\net9.0-windows\EpicPencil.Windows.dll
+C:\Users\roman\Projects\epic-pencil\src\EpicPencil.Windows\bin\Debug\net9.0-windows\EpicPencil.Windows.pdb
+C:\Users\roman\Projects\epic-pencil\src\EpicPencil.Windows\obj\Debug\net9.0-windows\EpicPencil.Windows.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\roman\Projects\epic-pencil\src\EpicPencil.Windows\obj\Debug\net9.0-windows\EpicPencil.Windows.AssemblyInfoInputs.cache
+C:\Users\roman\Projects\epic-pencil\src\EpicPencil.Windows\obj\Debug\net9.0-windows\EpicPencil.Windows.AssemblyInfo.cs
+C:\Users\roman\Projects\epic-pencil\src\EpicPencil.Windows\obj\Debug\net9.0-windows\EpicPencil.Windows.csproj.CoreCompileInputs.cache
+C:\Users\roman\Projects\epic-pencil\src\EpicPencil.Windows\obj\Debug\net9.0-windows\EpicPencil.Windows.dll
+C:\Users\roman\Projects\epic-pencil\src\EpicPencil.Windows\obj\Debug\net9.0-windows\refint\EpicPencil.Windows.dll
+C:\Users\roman\Projects\epic-pencil\src\EpicPencil.Windows\obj\Debug\net9.0-windows\EpicPencil.Windows.pdb
+C:\Users\roman\Projects\epic-pencil\src\EpicPencil.Windows\obj\Debug\net9.0-windows\ref\EpicPencil.Windows.dll
