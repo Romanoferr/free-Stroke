@@ -6,6 +6,18 @@
         Background="Transparent" Topmost="True" ShowInTaskbar="False"
         ResizeMode="NoResize" ShowActivated="False">
     <Grid>
+        <!-- Piso de alfa 1/255: o hit-test do OS em janelas layered consulta o
+             bitmap de alfa e perfura pixels alfa-zero mesmo com NCHITTEST=HTCLIENT
+             e sem WS_EX_TRANSPARENT. Alfa 1 é invisível (<1 LSB) mas "sólido"
+             para o compositor. Sem isso, canvas vazio nunca recebe cliques. -->
+        <Border Background="#01000000"/>
         <local:InkSurface x:Name="Surface"/>
+        <!-- Badge de modo: prova visual de que o overlay existe + modo atual.
+             Verde = desenho, vermelho = interagir. Requisito F-12 (indicador). -->
+        <Ellipse x:Name="ModeBadge" Width="14" Height="14"
+                 HorizontalAlignment="Right" VerticalAlignment="Top" Margin="12"
+                 Fill="LimeGreen" Opacity="0.85"/>
+        <!-- Painel de flash (diagnóstico): prova se a janela está visível e por cima. -->
+        <Border x:Name="FlashPanel" Background="Red" Visibility="Collapsed"/>
     </Grid>
 </Window>

@@ -33,4 +33,12 @@ public static class StrokeSpec
     // Filtro incremental na captura: descarta micro-jitter sem rodar RDP por move.
     public static float CaptureMinDistance(float widthDip) =>
         Math.Clamp(widthDip * 0.15f, 0.6f, 2f);
+
+    // Presets S/M/L por ferramenta (size 0/1/2), relativos ao default.
+    public static float WidthPreset(ToolKind tool, int size) => size switch
+    {
+        0 => DefaultWidth(tool) * 0.5f,
+        2 => DefaultWidth(tool) * 2f,
+        _ => DefaultWidth(tool)
+    };
 }

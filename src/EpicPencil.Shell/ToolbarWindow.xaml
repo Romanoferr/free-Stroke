@@ -6,13 +6,28 @@
         Left="16" Top="16">
     <StackPanel Orientation="Vertical" Margin="8">
         <StackPanel Orientation="Horizontal">
-            <Button x:Name="PenButton" Content="Caneta (P)" Click="OnPen" Margin="2" Padding="8,4"/>
-            <Button x:Name="EraserButton" Content="Borracha (E)" Click="OnEraser" Margin="2" Padding="8,4"/>
-            <Button Content="Undo" Click="OnUndo" Margin="2" Padding="8,4"/>
+            <Button x:Name="PenButton" Content="Caneta (P)" Click="OnToolPen" Margin="2" Padding="8,4"/>
+            <Button x:Name="PencilButton" Content="Lápis (B)" Click="OnToolPencil" Margin="2" Padding="8,4"/>
+            <Button x:Name="MarkerButton" Content="Marca (H)" Click="OnToolMarker" Margin="2" Padding="8,4"/>
+            <Button x:Name="LineButton" Content="Linha (L)" Click="OnToolLine" Margin="2" Padding="8,4"/>
+            <Button x:Name="ArrowButton" Content="Seta (S)" Click="OnToolArrow" Margin="2" Padding="8,4"/>
+            <Button x:Name="EraserButton" Content="Borracha (E)" Click="OnToolEraser" Margin="2" Padding="8,4"/>
+        </StackPanel>
+        <StackPanel Orientation="Horizontal">
+            <StackPanel x:Name="ColorRow" Orientation="Horizontal"/>
+            <Button Content="S (1)" Click="OnWidthS" Margin="6,2,2,2" Padding="8,4" ToolTip="Espessura fina"/>
+            <Button Content="M (2)" Click="OnWidthM" Margin="2" Padding="8,4" ToolTip="Espessura média"/>
+            <Button Content="L (3)" Click="OnWidthL" Margin="2" Padding="8,4" ToolTip="Espessura grossa"/>
+            <Button Content="Undo" Click="OnUndo" Margin="6,2,2,2" Padding="8,4"/>
             <Button Content="Redo" Click="OnRedo" Margin="2" Padding="8,4"/>
             <Button Content="Limpar (C)" Click="OnClear" Margin="2" Padding="8,4"/>
             <Button x:Name="ModeButton" Content="Interagir" Click="OnMode" Margin="2" Padding="8,4"/>
             <Button x:Name="HideButton" Content="Esconder (H)" Click="OnHide" Margin="2" Padding="8,4"/>
+        </StackPanel>
+        <StackPanel Orientation="Horizontal">
+            <Button Content="Piscar overlay" Click="OnFlash" Margin="2" Padding="8,4" ToolTip="Diagnóstico: pinta a tela de vermelho por 400ms"/>
+            <Button Content="Quem recebe o clique?" Click="OnWho" Margin="2" Padding="8,4" ToolTip="Diagnóstico: identifica a janela sob o cursor"/>
+            <Button Content="Trazer p/ frente" Click="OnFront" Margin="2" Padding="8,4" ToolTip="Reforça o overlay no topo (z-order)"/>
         </StackPanel>
         <TextBlock x:Name="StatusText" Margin="2,6,2,0" FontFamily="Consolas" FontSize="11" Text="..."/>
     </StackPanel>

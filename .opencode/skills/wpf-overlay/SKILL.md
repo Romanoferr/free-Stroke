@@ -25,3 +25,18 @@ description: Win32 overlay recipe for Epic Pencil (transparent fullscreen, click
 - Exclusive-fullscreen (DXGI flip) can hide any overlay — limitation, future capture-mode is opt-in.
 - Teams/Meet/Zoom may not capture the overlay (window vs composition capture) — must be characterized per tool before release notes.
 - Self-test proves styles/focus/timing only. Pixel click-through ("click lands in app below") and mixed-DPI positioning require manual runs: `dotnet run --project prototypes/S1.Overlay` (+ `taskkill /IM S1.Overlay.exe /F` to exit click-through mode, which is intentionally unclickable).
+
+## Click diagnostics (ToolbarWindow: Flash / Who / Front)
+
+When clicks never reach the overlay (`janela PreviewMouseDown/StylusDown` absent from log despite draw mode + `transparent=False`):
+
+1. **Flash** (`OverlayWindow.FlashTest`): paints fullscreen red 400 ms. Red seen = window present and on top (problem is input routing). No red = window absent/covered (z-order/visibility problem).
+2. **Who** (`OverlayBehavior.DescribePointOwner` via `WindowFromPoint`): identifies the HWND under the cursor with process name. `nosso=True` = clicks reach us (routing/promotion bug). Another proc = the click thief (log its name).
+3. **Front** (`ReassertTopmost` + `Describe` readback): if clicks work after this, root cause was z-order loss — then find who stole it (foreground-change hook) instead of polling.
+4. Overlay logs bounds/monitors/ex-style/tier at startup; every `ApplyState` logs mode + click-through readback. `input begin src=mouse|stylus` tells which funnel fired (dedup via `InputDedup`, 80 ms window).
+
+## Empty-canvas hit-testing gotchas (learned debugging real misses)
+
+- A raw `FrameworkElement` (no `Background`) can miss visual hit-testing on empty areas. Defense in depth, in order: (1) `HitTestCore` override returning self, (2) `_hit`: full-bleed `Transparent`-brush rect visual (invisible but hittable) refreshed in `OnRenderSizeChanged`.
+- CAUTION: the simple `VisualTreeHelper.HitTest(visual, point)` overload calls `HitTestCore` directly and can PASS while real clicks still miss. The callback-based `HitTest` overload is closer to the `WM_NCHITTEST` path — but even it can pass headless while the live window misses. Ground truth is live-only: `ProbeHitTest` (`SendMessage WM_NCHITTEST`, expect `HTCLIENT=1`; `HTTRANSPARENT=-1` means pass-through) + `DescribeZOrder` (real rects via `GetWindowRect`, `vis`/`dis` flags, `>>OVERLAY<<` marker). Never declare hit-testing fixed without the live probe reading `HTCLIENT`.
+- **Alpha-zero drill-through**: on `UpdateLayeredWindow` (`AllowsTransparency`) windows the OS compositor hit-test consults the ALPHA BITMAP, not just `WM_NCHITTEST`/`WS_EX_TRANSPARENT`. Signature: z-order + `vis`/`dis` + rect all correct, direct `NCHITTEST=HTCLIENT`, yet `WindowFromPoint` returns the app below. Fix: alpha floor — full-bleed `#01000000` background (invisible, <1 LSB) so the bitmap is solid to the compositor. `WS_EX_TRANSPARENT` (interact mode) still passes through regardless of alpha.
