@@ -43,20 +43,30 @@ internal static class WpfStrokeRenderer
         return bmp;
     }
 
-    // Visual da captura em (0,0)+Offset: mover = trocar Offset, sem re-render.
-    public static DrawingVisual BuildScreenVisual(ScreenObject s, ImageSource image)
+    // Visual da captura: imagem em px, posicionada via Offset local (DIP).
+    // Mover = trocar Offset, sem re-render. Rect local explícito
+    // (multi-monitor: cada overlay converte os px globais p/ seu DIP).
+    public static DrawingVisual BuildScreenVisual(ImageSource image, RectD localRect) =>
+        BuildScreenVisual(image, localRect.Width, localRect.Height, localRect.X, localRect.Y);
+
+    public static DrawingVisual BuildScreenVisual(ImageSource image, float widthDip, float heightDip, float offsetX, float offsetY)
     {
         var visual = new DrawingVisual();
         using (var dc = visual.RenderOpen())
-            dc.DrawImage(image, new System.Windows.Rect(0, 0, s.WidthDip, s.HeightDip));
-        visual.Offset = new Vector(s.X, s.Y);
+            dc.DrawImage(image, new System.Windows.Rect(0, 0, widthDip, heightDip));
+        visual.Offset = new Vector(offsetX, offsetY);
         return visual;
     }
 
-    public static DrawingVisual BuildStrokeVisual(Stroke s)
+    // Overload com pontos já convertidos p/ o frame local do overlay
+    // (multi-monitor: o stroke vive em px globais no modelo; a largura chega
+    // em DIP local = px ÷ escala). Sem overload direto de Stroke de propósito:
+    // passar o modelo global sem converter reintroduziria o bug de 1 monitor.
+    public static DrawingVisual BuildStrokeVisual(IReadOnlyList<Pt> points,
+        Rgba color, float width, ToolKind tool, float opacity)
     {
         var visual = new DrawingVisual();
-        RenderInto(visual, s.Points, s.Color, s.WidthDip, s.Tool, s.Opacity);
+        RenderInto(visual, points, color, width, tool, opacity);
         // Sem Freeze: DrawingVisual não é Freezable. A imutabilidade vem de
         // nunca reabrir o visual + recursos internos (Pen/Brush/Geometry) congelados.
         return visual;

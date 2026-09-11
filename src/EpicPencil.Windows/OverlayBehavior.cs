@@ -35,6 +35,15 @@ public static class OverlayBehavior
         Native.SetWindowPos(hwnd, Native.HWND_TOPMOST, 0, 0, 0, 0,
             Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOACTIVATE | Native.SWP_NOREDRAW);
 
+    // Posicionamento físico exato (px da tela virtual, negativos OK): imune a
+    // DPI misto, ao contrário de Left/Top do WPF. Usado no Loaded de cada overlay.
+    public static void PlaceAt(IntPtr hwnd, int x, int y, int w, int h) =>
+        Native.SetWindowPos(hwnd, Native.HWND_TOPMOST, x, y, w, h, Native.SWP_NOACTIVATE);
+
+    // WM_DISPLAYCHANGE (plug/unplug/resolução/escala/primário): a Shell observa
+    // via hook e reconstrói os overlays com debounce.
+    public static bool IsDisplayChange(int msg) => msg == Native.WM_DISPLAYCHANGE;
+
     public static bool IsForeground(IntPtr hwnd) => Native.GetForegroundWindow() == hwnd;
 
     public static int MonitorCount()

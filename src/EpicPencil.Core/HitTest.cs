@@ -1,6 +1,6 @@
 // Hit-test da borracha por stroke: Bounds primeiro (barato), depois distância
-// ponto→segmento (exato). Tolerância mínima de 6 DIP para strokes finos serem
-// apagáveis com gesto rápido sem exigir precisão cirúrgica.
+// ponto→segmento (exato). Tudo em px globais. Tolerância mínima de 6 px para
+// strokes finos serem apagáveis com gesto rápido sem exigir precisão cirúrgica.
 
 namespace EpicPencil.Core;
 
@@ -21,7 +21,7 @@ public static class Geometry
 
 public static class HitTest
 {
-    public static float EraseTolerance(Stroke s) => Math.Max(6f, s.WidthDip / 2);
+    public static float EraseTolerance(Stroke s) => Math.Max(6f, s.WidthPx / 2);
 
     public static bool Hits(Stroke s, Pt p)
     {

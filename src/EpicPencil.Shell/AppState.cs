@@ -57,6 +57,7 @@ public sealed class AppState
 
     public int StrokeCount => _doc.Count;
     public int PointCount => _doc.TotalPoints();
+    public IReadOnlyList<Stroke> Strokes => _doc.Strokes;
     public int ScreenCount => _doc.ScreenCount;
     public IReadOnlyList<ScreenObject> Screens => _doc.Screens;
     public int? SelectedScreenId { get; private set; }
@@ -87,17 +88,20 @@ public sealed class AppState
         StateChanged?.Invoke();
     }
 
-    public Stroke? AddFreehand(List<Pt> rawPoints)
+    // Largura em PX GLOBAIS (a superfície converte seu DIP local na borda):
+    // o documento inteiro — pontos, tolerâncias, bounds, hit-test — vive em px
+    // da tela virtual, idêntico ao DIP em 100%.
+    public Stroke? AddFreehand(List<Pt> rawPoints, float widthPx)
     {
         if (rawPoints.Count == 0) return null;
-        float tol = StrokeSpec.CommitTolerance(ActiveWidth);
+        float tol = StrokeSpec.CommitTolerance(widthPx);
         var simplified = Rdp.Simplify(rawPoints, tol);
         if (simplified.Count == 0) return null;
-        var stroke = new Stroke(_doc.NextId(), ActiveTool, ActiveColor, ActiveWidth,
+        var stroke = new Stroke(_doc.NextId(), ActiveTool, ActiveColor, widthPx,
             StrokeSpec.DefaultOpacity(ActiveTool), simplified);
         _undo.Execute(new AddStrokeCommand(stroke), _doc);
         Log.Info($"stroke id={stroke.Id} tool={stroke.Tool} pts={stroke.PointCount} " +
-            $"cor=#{stroke.Color.R:X2}{stroke.Color.G:X2}{stroke.Color.B:X2} w={stroke.WidthDip:F1}");
+            $"cor=#{stroke.Color.R:X2}{stroke.Color.G:X2}{stroke.Color.B:X2} w={stroke.WidthPx:F1}px");
         StrokeAdded?.Invoke(stroke);
         StateChanged?.Invoke();
         return stroke;
@@ -105,14 +109,13 @@ public sealed class AppState
 
     // Formas saem sempre opacas: a polilinha assada da seta sobrepõe o fuste,
     // e sobreposição com alfa escureceria a região (mesmo bug do marker).
-    public Stroke? AddShape(ToolKind tool, Pt a, Pt b)
+    public Stroke? AddShape(ToolKind tool, Pt a, Pt b, float widthPx)
     {
         if (tool != ToolKind.Line && tool != ToolKind.Arrow) return null;
-        float width = Presets[tool].WidthDip;
         var points = tool == ToolKind.Line
             ? ShapeBuilder.BuildLine(a, b)
-            : ShapeBuilder.BuildArrow(a, b, width);
-        var stroke = new Stroke(_doc.NextId(), tool, Presets[tool].Color, width, 1f, points);
+            : ShapeBuilder.BuildArrow(a, b, widthPx);
+        var stroke = new Stroke(_doc.NextId(), tool, Presets[tool].Color, widthPx, 1f, points);
         _undo.Execute(new AddStrokeCommand(stroke), _doc);
         Log.Info($"shape id={stroke.Id} tool={tool} pts={stroke.PointCount}");
         StrokeAdded?.Invoke(stroke);
@@ -196,17 +199,17 @@ public sealed class AppState
         StateChanged?.Invoke();
     }
 
-    public ScreenObject? AddScreen(byte[] bgra, int pixelWidth, int pixelHeight, RectD dipRect)
+    public ScreenObject? AddScreen(byte[] bgra, int pixelWidth, int pixelHeight, RectD globalPxRect)
     {
         if (bgra.Length != 4 * pixelWidth * pixelHeight)
         {
             Log.Warn("captura descartada: bytes incompatíveis");
             return null;
         }
-        var screen = new ScreenObject(_doc.NextId(), dipRect.X, dipRect.Y,
-            dipRect.Width, dipRect.Height, pixelWidth, pixelHeight, bgra);
+        var screen = new ScreenObject(_doc.NextId(), globalPxRect.X, globalPxRect.Y,
+            globalPxRect.Width, globalPxRect.Height, pixelWidth, pixelHeight, bgra);
         _undo.Execute(new AddScreenCommand(screen), _doc);
-        Log.Info($"captura id={screen.Id} {pixelWidth}x{pixelHeight}px em ({dipRect.X:F0},{dipRect.Y:F0})");
+        Log.Info($"captura id={screen.Id} {pixelWidth}x{pixelHeight}px em ({globalPxRect.X:F0},{globalPxRect.Y:F0})");
         ScreenAdded?.Invoke(screen);
         SelectScreen(screen.Id);
         return screen;

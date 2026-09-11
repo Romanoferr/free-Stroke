@@ -21,13 +21,18 @@ public partial class ToolbarWindow : Window
     };
 
     private readonly AppState _state;
-    private readonly OverlayWindow _overlay;
+    private IReadOnlyList<OverlayWindow> _overlays;
+    private OverlayWindow _primary;
 
-    public ToolbarWindow(AppState state, OverlayWindow overlay)
+    // Self-test fecha janelas sem encerrar o processo (produção: fechar = sair).
+    public bool SuppressCloseShutdown { get; set; }
+
+    public ToolbarWindow(AppState state, IReadOnlyList<OverlayWindow> overlays, OverlayWindow primary)
     {
         InitializeComponent();
         _state = state;
-        _overlay = overlay;
+        _overlays = overlays;
+        _primary = primary;
         foreach (var color in Palette)
         {
             var swatch = new Button
@@ -47,12 +52,23 @@ public partial class ToolbarWindow : Window
         PreviewKeyDown += OnKey;
         // REQ2: fechar a toolbar encerra o processo (não minimiza para o nada —
         // não há tray nesta versão; fechamento = encerramento completo).
+        // Exceção: self-test (SuppressCloseShutdown) fecha sem desligar.
         Closed += (_, _) =>
         {
+            if (SuppressCloseShutdown) return;
             Log.Info("toolbar fechada → shutdown completo");
             Application.Current.Shutdown();
         };
         ToolTip = $"Log: {Log.Path}"; // onde debugar o que aconteceu
+        RefreshStatus();
+    }
+
+    // Rebuild de topologia troca a lista de overlays sem recriar a toolbar
+    // (toolbar é única e compartilhada — nunca duplicada por monitor).
+    public void Retarget(IReadOnlyList<OverlayWindow> overlays, OverlayWindow primary)
+    {
+        _overlays = overlays;
+        _primary = primary;
         RefreshStatus();
     }
 
@@ -77,7 +93,10 @@ public partial class ToolbarWindow : Window
         Log.Info("saída via botão Sair → shutdown completo");
         Application.Current.Shutdown();
     }
-    private void OnFlash(object sender, RoutedEventArgs e) => _overlay.FlashTest();
+    private void OnFlash(object sender, RoutedEventArgs e)
+    {
+        foreach (var overlay in _overlays) overlay.FlashTest();
+    }
     private void OnWho(object sender, RoutedEventArgs e)
     {
         // Amostragem com atraso: o cursor precisa estar SOBRE O CANVAS, não no botão.
@@ -91,11 +110,14 @@ public partial class ToolbarWindow : Window
         {
             timer.Stop();
             IntPtr toolbarHwnd = new WindowInteropHelper(this).Handle;
-            MessageBox.Show(_overlay.DiagnosePoint(toolbarHwnd), "Quem recebe o clique?");
+            MessageBox.Show(_primary.DiagnosePoint(toolbarHwnd), "Quem recebe o clique?");
         };
         timer.Start();
     }
-    private void OnFront(object sender, RoutedEventArgs e) => _overlay.ReassertFront();
+    private void OnFront(object sender, RoutedEventArgs e)
+    {
+        foreach (var overlay in _overlays) overlay.ReassertFront();
+    }
 
     private void OnKey(object sender, KeyEventArgs e)
     {
@@ -131,10 +153,10 @@ public partial class ToolbarWindow : Window
         SelectButton.FontWeight = _state.ActiveTool == ToolKind.Select ? FontWeights.Bold : FontWeights.Normal;
         EraserButton.FontWeight = _state.ActiveTool == ToolKind.EraserStroke ? FontWeights.Bold : FontWeights.Normal;
         var c = _state.ActiveColor;
-        StatusText.Text = $"modo={(_state.IsDrawMode ? "desenho" : "interagir")} " +
+        StatusText.Text = $"mons={_overlays.Count} modo={(_state.IsDrawMode ? "desenho" : "interagir")} " +
             $"tool={_state.ActiveTool} cor=#{c.R:X2}{c.G:X2}{c.B:X2} w={_state.ActiveWidth:F1} " +
             $"strokes={_state.StrokeCount} pts={_state.PointCount} " +
             $"caps={_state.ScreenCount} sel={_state.SelectedScreenId?.ToString() ?? "-"} " +
-            $"p50={_overlay.SurfaceControl.ProcessingP50Ms:F2}ms";
+            $"p50={_primary.SurfaceControl.ProcessingP50Ms:F2}ms";
     }
 }

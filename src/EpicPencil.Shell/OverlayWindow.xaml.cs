@@ -8,21 +8,41 @@ namespace EpicPencil.Shell;
 public partial class OverlayWindow : Window
 {
     private readonly AppState _state;
+    private readonly MonitorInfo _monitor;
     private IntPtr _hwnd;
     private HwndSource? _source;
 
-    public OverlayWindow(AppState state)
+    // Topologia mudou (plug/unplug/resolução/escala/primário): o App reconstrói
+    // os overlays com debounce. Evento de instância (App assina cada overlay).
+    public event Action? TopologyChanged;
+
+    // Suprime o shutdown durante rebuild (fechamento programado ≠ usuário).
+    public bool SuppressCloseShutdown { get; set; }
+
+    public OverlayWindow(AppState state, MonitorInfo monitor)
     {
         InitializeComponent();
         _state = state;
+        _monitor = monitor;
+        Surface.Frame = monitor.Frame;
         Surface.Attach(state);
         SourceInitialized += OnSourceInitialized;
         Loaded += OnLoaded;
         // REQ2: fechar QUALQUER janela = encerrar tudo (ShutdownMode explícito no App).
+        // Exceção: fechamento programado do rebuild de topologia (SuppressCloseShutdown).
         Closed += (_, _) =>
         {
             _source?.RemoveHook(WndHook);
             _source = null;
+            // O AppState sobrevive ao rebuild: solta as assinaturas p/ a
+            // superfície fechada não vazar nem renderizar fantasmas.
+            _state.StateChanged -= ApplyState;
+            Surface.Detach();
+            if (SuppressCloseShutdown)
+            {
+                Log.Info($"overlay mon={_monitor.Id} fechado p/ rebuild (sem shutdown)");
+                return;
+            }
             Log.Info("overlay fechado → shutdown completo");
             Application.Current.Shutdown();
         };
@@ -39,6 +59,7 @@ public partial class OverlayWindow : Window
 
     public InkSurface SurfaceControl => Surface;
     public IntPtr Handle => _hwnd;
+    public MonitorInfo Monitor => _monitor;
 
     // Diagnóstico: pinta tudo de vermelho por 400 ms. Se o usuário NÃO vir
     // vermelho, a janela está ausente/coberta (z-order/visibilidade), não é input.
@@ -89,19 +110,24 @@ public partial class OverlayWindow : Window
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
-        // Área de DESENHO = WORK AREA (tela menos taskbar/appbars reservadas).
+        // Área de DESENHO = WORK AREA DO PRÓPRIO MONITOR (tela menos taskbar).
         // Regra de regiões (REQ3): a taskbar é área de INTERAÇÃO do shell — o
-        // overlay nunca a cobre, então ela segue 100% funcional mesmo em modo
-        // desenho. Fullscreen anterior (rcMonitor) engolia os cliques dela.
-        // Multi-monitor (1 overlay por monitor, cada um no seu rcWork) entra no S4.
-        var work = SystemParameters.WorkArea;
-        Left = work.Left; Top = work.Top;
-        Width = work.Width; Height = work.Height;
-        Log.Info($"overlay bounds={Width:F0}x{Height:F0}@{Left:F0},{Top:F0} monitores={OverlayBehavior.MonitorCount()} " +
+        // overlay nunca a cobre. Posicionamento em 2 passos: WPF (DIP aprox.)
+        // + SetWindowPos físico (exato, imune a DPI misto).
+        var dpi = System.Windows.Media.VisualTreeHelper.GetDpi(this);
+        double sx = dpi.DpiScaleX > 0 ? dpi.DpiScaleX : 1.0;
+        double sy = dpi.DpiScaleY > 0 ? dpi.DpiScaleY : 1.0;
+        // Escala real da janela (pode divergir do GetDpiForMonitor em frações).
+        Surface.Frame = new EpicPencil.Core.MonitorFrame(_monitor.WorkX, _monitor.WorkY, (float)sx, (float)sy);
+        Left = _monitor.WorkX / sx; Top = _monitor.WorkY / sy;
+        Width = _monitor.WorkW / sx; Height = _monitor.WorkH / sy;
+        if (_hwnd != IntPtr.Zero)
+            OverlayBehavior.PlaceAt(_hwnd, _monitor.WorkX, _monitor.WorkY, _monitor.WorkW, _monitor.WorkH);
+        Log.Info($"overlay mon={_monitor.Id} dev={_monitor.DeviceName} prim={_monitor.IsPrimary} " +
+            $"work={_monitor.WorkW}x{_monitor.WorkH}@({_monitor.WorkX},{_monitor.WorkY})px " +
+            $"dpi={sx:F2}x{sy:F2} bounds={Width:F0}x{Height:F0}@{Left:F0},{Top:F0} " +
             $"topmost={Topmost} {OverlayBehavior.Describe(_hwnd)} " +
             $"tier={System.Windows.Media.RenderCapability.Tier >> 16}");
-        if (OverlayBehavior.MonitorCount() > 1)
-            Log.Warn(">1 monitor: overlay cobre só o primário (S4 pendente) — desenhe no monitor principal");
     }
 
     private void ApplyState()
@@ -113,16 +139,21 @@ public partial class OverlayWindow : Window
             : System.Windows.Media.Brushes.OrangeRed;
         ModeBadge.ToolTip = _state.IsDrawMode ? "Modo desenho (clique e arraste para riscar)"
             : "Modo interagir (cliques atravessam — volte pela toolbar)";
-        Log.Info($"overlay aplicado modo={(_state.IsDrawMode ? "desenho" : "interagir")} " +
+        Log.Info($"overlay mon={_monitor.Id} aplicado modo={(_state.IsDrawMode ? "desenho" : "interagir")} " +
             $"clickThrough={OverlayBehavior.IsClickThrough(_hwnd)} tinta={_state.InkVisible}");
     }
 
-    private static IntPtr WndHook(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+    private IntPtr WndHook(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
         if (OverlayBehavior.TryHandleMouseActivate(msg, out var result))
         {
             handled = true;
             return result;
+        }
+        if (OverlayBehavior.IsDisplayChange(msg))
+        {
+            Log.Info($"overlay mon={_monitor.Id} recebeu WM_DISPLAYCHANGE → rebuild");
+            TopologyChanged?.Invoke();
         }
         return IntPtr.Zero;
     }

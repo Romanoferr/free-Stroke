@@ -12,10 +12,15 @@ namespace EpicPencil.Shell;
 internal static class ShellSelfTest
 {
     // Flow fake: bytes sintéticos (sem tela real) p/ testar marquee→modelo→visual.
+    // Registra a última região pedida (em px globais) p/ provar a conversão.
     private sealed class FakeFlow : IScreenCaptureFlow
     {
-        public Task<CapturedImage?> CaptureRegionDipAsync(RectD region) =>
-            Task.FromResult<CapturedImage?>(new CapturedImage(8, 6, new byte[4 * 8 * 6]));
+        public RectD LastRegion;
+        public Task<CapturedImage?> CaptureRegionGlobalPxAsync(RectD globalPx)
+        {
+            LastRegion = globalPx;
+            return Task.FromResult<CapturedImage?>(new CapturedImage(8, 6, new byte[4 * 8 * 6]));
+        }
     }
 
     public static int Run()
@@ -29,6 +34,8 @@ internal static class ShellSelfTest
         RunSync(Check);
         RunAsync(Check).GetAwaiter().GetResult();
         RunWindows(Check);
+        RunMonitors(Check);
+        RunRebuild(Check);
         Console.WriteLine(failures.Count == 0 ? "SHELL SELFTEST OK" : $"FALHOU: {failures.Count}");
         return failures.Count == 0 ? 0 : 1;
     }
@@ -168,23 +175,164 @@ internal static class ShellSelfTest
 
     private static void RunWindows(Action<bool, string> Check)
     {
-        // REQ1–REQ3: regiões. Overlay cobre a WORK AREA (nunca a taskbar) e a
-        // toolbar é owned (sempre acima do overlay). Janelas reais: teste breve
-        // e invisível (overlay transparente), fechadas em seguida.
+        // REQ1–REQ3: regiões. Overlay cobre a WORK AREA DO SEU MONITOR (nunca a
+        // taskbar) e a toolbar é owned (sempre acima do overlay primário).
+        // Janelas reais: teste breve e invisível (overlay transparente).
+        var layout = MonitorLayout.Enumerate();
+        Check(layout.Count >= 1, $"enumera monitores (n={layout.Count})");
         var state2 = new AppState();
-        var overlay = new OverlayWindow(state2);
-        var toolbar = new ToolbarWindow(state2, overlay);
-        overlay.Show();
-        toolbar.Owner = overlay; // WPF: dono precisa estar exibido antes
+        var overlays = layout.Select(m => new OverlayWindow(state2, m)).ToList();
+        var primary = overlays.FirstOrDefault(o => o.Monitor.IsPrimary) ?? overlays[0];
+        var toolbar = new ToolbarWindow(state2, overlays, primary);
+        foreach (var overlay in overlays) overlay.Show();
+        toolbar.Owner = primary; // WPF: dono precisa estar exibido antes
         toolbar.Show();
-        overlay.Dispatcher.Invoke(() => { }, System.Windows.Threading.DispatcherPriority.Loaded);
+        primary.Dispatcher.Invoke(() => { }, System.Windows.Threading.DispatcherPriority.Loaded);
         var work = System.Windows.SystemParameters.WorkArea;
-        Check(Math.Abs(overlay.Left - work.Left) < 1 && Math.Abs(overlay.Top - work.Top) < 1 &&
-            Math.Abs(overlay.Width - work.Width) < 1 && Math.Abs(overlay.Height - work.Height) < 1,
-            $"overlay = work area ({overlay.Width:F0}x{overlay.Height:F0}@{overlay.Left:F0},{overlay.Top:F0})");
-        Check(ReferenceEquals(toolbar.Owner, overlay), "toolbar owned (sempre acima do overlay)");
-        Check(overlay.IsVisible && toolbar.IsVisible, "overlay+toolbar visíveis");
+        Check(Math.Abs(primary.Left - work.Left) < 1 && Math.Abs(primary.Top - work.Top) < 1 &&
+            Math.Abs(primary.Width - work.Width) < 1 && Math.Abs(primary.Height - work.Height) < 1,
+            $"overlay primário = work area ({primary.Width:F0}x{primary.Height:F0}@{primary.Left:F0},{primary.Top:F0})");
+        Check(ReferenceEquals(toolbar.Owner, primary), "toolbar owned (sempre acima do overlay)");
+        Check(overlays.All(o => o.IsVisible) && toolbar.IsVisible, $"overlay(s)+toolbar visíveis ({overlays.Count})");
+        toolbar.SuppressCloseShutdown = true;
         toolbar.Close();
-        overlay.Close();
+        foreach (var overlay in overlays) overlay.SuppressCloseShutdown = true;
+        foreach (var overlay in overlays) overlay.Close();
+    }
+
+    private static void RunMonitors(Action<bool, string> Check)
+    {
+        // Enumeração Win32: quantidade, primário único, áreas positivas, Ids.
+        var layout = MonitorLayout.Enumerate();
+        Check(layout.Count == OverlayBehavior.MonitorCount(),
+            $"enumerate == SM_CMONITORS ({layout.Count})");
+        Check(layout.Count(m => m.IsPrimary) == 1, "exatamente 1 primário");
+        Check(layout.All(m => m.WorkW > 0 && m.WorkH > 0), "work areas positivas");
+        Check(layout.Select(m => m.Id).SequenceEqual(Enumerable.Range(0, layout.Count)),
+            "Ids estáveis 0..n-1 (0 = primário)");
+        Console.WriteLine("monitores: " + string.Join(" ",
+            layout.Select(m => $"[#{m.Id} {m.DeviceName} {m.WorkW}x{m.WorkH}@({m.WorkX},{m.WorkY}) prim={m.IsPrimary} dpi={m.DpiScaleX:F2}]")));
+
+        // Seleção por ponto: MonitorFromPoint respeita coords negativas.
+        foreach (var m in layout)
+        {
+            bool ok = MonitorLayout.TryFindForPoint(m.WorkX + 2, m.WorkY + 2, layout, out var found);
+            Check(ok && found is not null && found.Hmon == m.Hmon,
+                $"MonitorFromPoint em ({m.WorkX + 2},{m.WorkY + 2}) → mon#{m.Id}");
+        }
+
+        // Documento global compartilhado: stroke desenhado no overlay com
+        // origem negativa commita em px globais; o outro overlay converte de volta.
+        var state = new AppState();
+        var surfA = new InkSurface(); // frame identidade (monitor em 0,0)
+        var surfB = new InkSurface(); // monitor à esquerda, origem negativa
+        surfB.Frame = new MonitorFrame(-1920, 160, 1, 1);
+        surfA.Attach(state);
+        surfB.Attach(state);
+        surfB.SimulateStroke(new List<Pt> { new(100, 100), new(200, 100), new(300, 150) });
+        Check(state.StrokeCount == 1, "stroke do monitor secundário commita");
+        var pts = state.Strokes[^1].Points;
+        Check(Math.Abs(pts[0].X - (100 - 1920)) < 0.01 && Math.Abs(pts[0].Y - (100 + 160)) < 0.01,
+            $"stroke em global negativo ({pts[0].X:F0},{pts[0].Y:F0})");
+        var backToA = surfA.Frame.ToLocal(pts[0]);
+        Check(Math.Abs(backToA.X - (100 - 1920)) < 0.01, "overlay primário enxerga o stroke global");
+        var backToB = surfB.Frame.ToLocal(pts[0]);
+        Check(Math.Abs(backToB.X - 100) < 0.01 && Math.Abs(backToB.Y - 100) < 0.01,
+            "round-trip global→local do monitor de origem é identidade");
+
+        // Marquee no monitor negativo: flow recebe px globais (BitBlt-ready).
+        var flow = new FakeFlow();
+        surfB.CaptureFlow = flow;
+        surfB.SimulateMarqueeAsync(new RectD(100, 100, 200, 150)).GetAwaiter().GetResult();
+        Check(state.ScreenCount == 1, "captura do monitor secundário commita");
+        Check(Math.Abs(flow.LastRegion.X - (100 - 1920)) < 0.01 &&
+            Math.Abs(flow.LastRegion.Y - (100 + 160)) < 0.01,
+            $"flow recebeu global negativo ({flow.LastRegion.X:F0},{flow.LastRegion.Y:F0})");
+        Check(Math.Abs(state.Screens[^1].X - flow.LastRegion.X) < 0.01,
+            "ScreenObject guarda posição global");
+
+        // BitBlt real na work area não-primária (só com 2+ monitores físicos).
+        var secondary = layout.FirstOrDefault(m => !m.IsPrimary);
+        if (secondary is not null)
+        {
+            var real = ScreenCapture.CaptureRegionPx(secondary.WorkX, secondary.WorkY, 32, 32);
+            Check(real is not null && real.Bgra.Length == 4 * 32 * 32,
+                $"BitBlt real 32x32 no monitor#{secondary.Id} ({secondary.WorkX},{secondary.WorkY})");
+        }
+        else
+        {
+            Console.WriteLine("SKIP BitBlt secundário (1 monitor físico)");
+        }
+    }
+
+    private static void RunRebuild(Action<bool, string> Check)
+    {
+        // Rebuild de topologia (plug/unplug): solta a toolbar (Owner=null,
+        // oculta), fecha overlays com suppress, recria e reanexa. A toolbar
+        // SOBREVIVE (sem cascata de owned-windows → sem Shutdown) e as
+        // superfícies fechadas param de renderizar (Detach).
+        var state = new AppState();
+        var layout = MonitorLayout.Enumerate();
+        var overlays = layout.Select(m => new OverlayWindow(state, m)).ToList();
+        var toolbar = new ToolbarWindow(state, overlays, overlays[0]);
+        foreach (var o in overlays) o.Show();
+        toolbar.Owner = overlays[0];
+        toolbar.Show();
+        toolbar.Dispatcher.Invoke(() => { }, System.Windows.Threading.DispatcherPriority.Loaded);
+        Check(overlays.All(o => o.IsVisible), $"rebuild: {overlays.Count} overlay(s) inicial(is)");
+
+        toolbar.Hide();
+        toolbar.Owner = null; // ordem obrigatória: Owner só troca oculta
+        foreach (var o in overlays) o.SuppressCloseShutdown = true;
+        foreach (var o in overlays) o.Close();
+        bool toolbarAlive = System.Windows.Application.Current.Windows
+            .Cast<System.Windows.Window>().Contains(toolbar);
+        Check(toolbarAlive, "rebuild: toolbar sobrevive (sem cascata owned→Shutdown)");
+        Check(overlays.All(o => !o.IsVisible), "rebuild: overlays antigos fechados");
+
+        var overlays2 = layout.Select(m => new OverlayWindow(state, m)).ToList();
+        toolbar.Retarget(overlays2, overlays2[0]);
+        foreach (var o in overlays2) o.Show();
+        toolbar.Owner = overlays2[0];
+        toolbar.Show();
+        Check(overlays2.All(o => o.IsVisible) && toolbar.IsVisible, "rebuild: overlays recriados + toolbar visível");
+
+        // Detach isolado: superfície sem Closed — Attach, Detach explícito,
+        // re-Attach duplo (idempotência: sem assinatura dupla).
+        var st2 = new AppState();
+        var sA = new InkSurface();
+        sA.Attach(st2);
+        sA.SimulateStroke(new List<Pt> { new(10, 10), new(20, 20) });
+        int v1 = ((ContainerVisual)VisualTreeHelper.GetChild(sA, 2)).Children.Count;
+        sA.Detach();
+        st2.AddFreehand(new List<Pt> { new Pt(50, 50), new Pt(60, 60) }, 4f);
+        int v2 = ((ContainerVisual)VisualTreeHelper.GetChild(sA, 2)).Children.Count;
+        Check(v1 == 1 && v2 == 1, $"Detach congela superfície ({v1}→{v2})");
+        sA.Attach(st2); // replay: 2 strokes do doc → 2 visuals
+        int v3 = ((ContainerVisual)VisualTreeHelper.GetChild(sA, 2)).Children.Count;
+        sA.Attach(st2); // 2× não duplica (clear + replay, sem assinatura dupla)
+        int v4 = ((ContainerVisual)VisualTreeHelper.GetChild(sA, 2)).Children.Count;
+        st2.AddFreehand(new List<Pt> { new Pt(70, 70), new Pt(80, 80) }, 4f);
+        int v5 = ((ContainerVisual)VisualTreeHelper.GetChild(sA, 2)).Children.Count;
+        Check(v3 == 2 && v4 == 2 && v5 == 3, $"Attach replay+idempotente+incremental ({v3},{v4},{v5})");
+
+        // Rebuild com tinta existente (cenário WM_DISPLAYCHANGE real): os novos
+        // overlays re-renderizam os strokes do documento compartilhado.
+        state.AddFreehand(new List<Pt> { new Pt(10, 10), new Pt(20, 20) }, 4f);
+        toolbar.Hide();
+        toolbar.Owner = null;
+        foreach (var o in overlays2) { o.SuppressCloseShutdown = true; o.Close(); }
+        var overlays3 = layout.Select(m => new OverlayWindow(state, m)).ToList();
+        toolbar.Retarget(overlays3, overlays3[0]);
+        foreach (var o in overlays3) o.Show();
+        toolbar.Owner = overlays3[0];
+        toolbar.Show();
+        bool inkKept = overlays3.All(o =>
+            ((ContainerVisual)VisualTreeHelper.GetChild(o.SurfaceControl, 2)).Children.Count == 1);
+        Check(inkKept, "rebuild preserva tinta visível (replay 1 stroke/overlay)");
+
+        toolbar.SuppressCloseShutdown = true;
+        toolbar.Close();
+        foreach (var o in overlays3) { o.SuppressCloseShutdown = true; o.Close(); }
     }
 }
