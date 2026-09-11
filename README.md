@@ -58,6 +58,26 @@ defaults e `Normalize()`; nenhum arquivo de settings é lido/escrito pelo app
 nesta versão (documentos descrevem o `settings.json` futuro em
 `%AppData%/EpicPencil/` como plano, não implementado).
 
+## Toolbar (UI)
+
+Cartão flutuante sem chrome do Windows (cantos arredondados, translúcido),
+arrastável pelo grip (⋮⋮) para qualquer posição da tela:
+
+- **Recolher/expandir** (chevron no cabeçalho, ~130 ms): recolhida vira uma
+  pílula mínima (grip + cor ativa + ferramenta + ponto de modo + expandir).
+- **Ferramentas em ícones vetoriais** (sem dependências externas) com tooltip +
+  atalho; ferramenta ativa com destaque azul; hover/pressed sutis.
+- **Cor e espessura**: 6 swatches circulares (anel branco = selecionada) +
+  slider de espessura 1–10 (presets maiores, ex. marca-texto, pinam no máximo
+  até o primeiro ajuste).
+- **Ações**: desfazer/refazer, apagar captura, limpar tudo, olho
+  (mostrar desenho = modo desenho / ocultar = interagir com a tela),
+  pílula Sair; diagnósticos ocultos em produção (código mantido p/ debug).
+- Mostrar/ocultar também pelo dot verde/laranja da barra recolhida e pelos
+  atalhos locais **PgUp**, **`'`** (aspas) ou **F9** — funcionam com a toolbar
+  recolhida (mesma janela); **Esc** oculta e libera o mouse.
+- Hotkeys locais inalterados (P/B/H/L/S/V/E, C, Ctrl+Z/Y).
+
 ## Multi-monitor
 
 Suportado: o app enumera todos os monitores via `EnumDisplayMonitors` e cria

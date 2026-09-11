@@ -3,6 +3,7 @@
 // capturas (flow fake). RunWindows: janelas reais breves (overlay+toolbar).
 
 using System.Windows;
+using System.Windows.Input;
 using System.Windows.Media;
 using EpicPencil.Core;
 using EpicPencil.Windows;
@@ -36,6 +37,7 @@ internal static class ShellSelfTest
         RunWindows(Check);
         RunMonitors(Check);
         RunRebuild(Check);
+        RunToolbarUI(Check);
         Console.WriteLine(failures.Count == 0 ? "SHELL SELFTEST OK" : $"FALHOU: {failures.Count}");
         return failures.Count == 0 ? 0 : 1;
     }
@@ -334,5 +336,111 @@ internal static class ShellSelfTest
         toolbar.SuppressCloseShutdown = true;
         toolbar.Close();
         foreach (var o in overlays3) { o.SuppressCloseShutdown = true; o.Close(); }
+    }
+
+    private static void RunToolbarUI(Action<bool, string> Check)
+    {
+        // UI nova (só apresentação): expandida por padrão, selected segue a
+        // ferramenta, collapse troca os painéis, ícones têm tooltip, swatches=6.
+        // Animação (~130 ms) não é aguardada aqui — só a máquina de estados.
+        var state = new AppState();
+        var layout = MonitorLayout.Enumerate();
+        var overlays = layout.Select(m => new OverlayWindow(state, m)).ToList();
+        var toolbar = new ToolbarWindow(state, overlays, overlays[0]);
+        foreach (var o in overlays) o.Show();
+        toolbar.Owner = overlays[0];
+        toolbar.Show();
+        toolbar.Dispatcher.Invoke(() => { }, System.Windows.Threading.DispatcherPriority.Loaded);
+
+        Check(!toolbar.IsCollapsed && toolbar.ExpandedPanel.Visibility == Visibility.Visible,
+            "toolbar inicia expandida");
+        Check(toolbar.SizeToContent == SizeToContent.Manual && toolbar.Width > 200,
+            $"tamanho expandido congelado ({toolbar.Width:F0}x{toolbar.Height:F0})");
+        double w0 = toolbar.Width;
+        Check(toolbar.ColorRow.Children.Count == 6, "6 swatches de cor");
+
+        state.SetTool(ToolKind.EraserStroke);
+        Check(!ReferenceEquals(toolbar.EraserButton.Background, Brushes.Transparent) &&
+            ReferenceEquals(toolbar.PenButton.Background, Brushes.Transparent),
+            "selected visual segue a ferramenta ativa");
+        Check(toolbar.PenButton.ToolTip is string tip && tip.Contains("(P)"),
+            "botão-ícone tem tooltip com atalho");
+        Check(toolbar.ThicknessSlider.Minimum == 1 && toolbar.ThicknessSlider.Maximum == 10,
+            "slider de espessura 1–10");
+        Check(toolbar.DiagnosticsRow.Visibility == Visibility.Collapsed,
+            "diagnósticos ocultos (produção)");
+
+        // Mostrar/ocultar unificado: visível = desenhar, oculto = interagir.
+        Check(state.InkVisible && state.IsDrawMode, "estado inicial: desenho visível");
+        toolbar.ThicknessSlider.Value = 7;
+        Check(state.ActiveWidth == 7, $"slider ajusta espessura (w={state.ActiveWidth:F0})");
+        toolbar.HideButton.RaiseEvent(new RoutedEventArgs(
+            System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+        Check(!state.InkVisible && !state.IsDrawMode, "olho oculta e libera interação");
+        toolbar.HideButton.RaiseEvent(new RoutedEventArgs(
+            System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+        Check(state.InkVisible && state.IsDrawMode, "olho mostra e volta a desenhar");
+
+        toolbar.CollapseButton.RaiseEvent(new RoutedEventArgs(
+            System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+        Check(toolbar.IsCollapsed && toolbar.CollapsedBar.Visibility == Visibility.Visible &&
+            toolbar.ExpandedPanel.Visibility == Visibility.Collapsed,
+            "recolher troca p/ barra compacta");
+        PumpUntilIdle(toolbar); // animação (~130 ms wall-clock) conclui com a fila bombeada
+        toolbar.ExpandButton.RaiseEvent(new RoutedEventArgs(
+            System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+        PumpUntilIdle(toolbar);
+        Check(!toolbar.IsCollapsed && toolbar.ExpandedPanel.Visibility == Visibility.Visible &&
+            Math.Abs(toolbar.Width - w0) < 2,
+            $"expandir restaura o painel e o tamanho ({toolbar.Width:F0}px)");
+
+        // Hotkey com a barra recolhida: PgUp alterna mostrar/interagir.
+        toolbar.CollapseButton.RaiseEvent(new RoutedEventArgs(
+            System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+        PumpUntilIdle(toolbar);
+        SendKey(toolbar, Key.PageUp);
+        Check(!state.InkVisible && !state.IsDrawMode, "PgUp recolhida oculta e libera interação");
+        toolbar.CollapsedModeButton.RaiseEvent(new RoutedEventArgs(
+            System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+        Check(state.InkVisible && state.IsDrawMode, "dot verde/laranja recolhido mostra e desenha");
+        SendKey(toolbar, Key.PageUp);
+        Check(!state.InkVisible && !state.IsDrawMode, "PgUp alterna de volta");
+
+        toolbar.SuppressCloseShutdown = true;
+        toolbar.Close();
+        foreach (var o in overlays) { o.SuppressCloseShutdown = true; o.Close(); }
+    }
+
+    // Bombeia a fila do dispatcher por ms reais (timers de UI disparam).
+    private static void PumpMs(Window window, int ms)
+    {
+        var frame = new System.Windows.Threading.DispatcherFrame();
+        var done = new System.Windows.Threading.DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(ms)
+        };
+        done.Tick += (_, _) => { done.Stop(); frame.Continue = false; };
+        done.Start();
+        System.Windows.Threading.Dispatcher.PushFrame(frame);
+    }
+
+    // Bombeia até a animação da toolbar concluir (teto 2 s — nunca trava o teste).
+    private static void PumpUntilIdle(ToolbarWindow toolbar)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (toolbar.IsAnimating && sw.Elapsed.TotalMilliseconds < 2000)
+            PumpMs(toolbar, 50);
+    }
+
+    // Tecla sintética p/ validar hotkeys locais (toolbar expandida ou recolhida).
+    private static void SendKey(Window window, System.Windows.Input.Key key)
+    {
+        var args = new System.Windows.Input.KeyEventArgs(
+            System.Windows.Input.Keyboard.PrimaryDevice,
+            PresentationSource.FromVisual(window), 0, key)
+        {
+            RoutedEvent = System.Windows.Input.Keyboard.PreviewKeyDownEvent
+        };
+        window.RaiseEvent(args);
     }
 }
