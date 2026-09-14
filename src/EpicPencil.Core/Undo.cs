@@ -13,6 +13,8 @@ public interface IDocCommand
     IReadOnlyList<Stroke> Affected { get; }
     // Capturas tocadas. Default vazio: comandos de stroke não precisam mudar.
     IReadOnlyList<ScreenObject> AffectedScreens => Array.Empty<ScreenObject>();
+    // Textos tocados. Default vazio: comandos de stroke/captura não precisam mudar.
+    IReadOnlyList<TextObject> AffectedTexts => Array.Empty<TextObject>();
 }
 
 public sealed class AddStrokeCommand : IDocCommand
@@ -67,21 +69,33 @@ public sealed class EraseStrokesCommand : IDocCommand
 public sealed class ClearAllCommand : IDocCommand
 {
     private readonly List<Stroke> _snapshot;
-    public ClearAllCommand(Document doc) => _snapshot = new List<Stroke>(doc.Strokes);
+    private readonly List<TextObject> _textSnapshot;
+    public ClearAllCommand(Document doc)
+    {
+        _snapshot = new List<Stroke>(doc.Strokes);
+        _textSnapshot = new List<TextObject>(doc.Texts);
+    }
     public int RetainedPoints
     {
         get
         {
             int n = 0;
             foreach (var s in _snapshot) n += s.PointCount;
+            foreach (var t in _textSnapshot) n += t.Content.Length;
             return n;
         }
     }
     public IReadOnlyList<Stroke> Affected => _snapshot;
-    public void Do(Document doc) => doc.Clear();
+    public IReadOnlyList<TextObject> AffectedTexts => _textSnapshot;
+    public void Do(Document doc)
+    {
+        doc.Clear();
+        foreach (var t in _textSnapshot) doc.RemoveText(t);
+    }
     public void Undo(Document doc)
     {
         foreach (var s in _snapshot) doc.Add(s);
+        foreach (var t in _textSnapshot) doc.AddText(t);
     }
 }
 

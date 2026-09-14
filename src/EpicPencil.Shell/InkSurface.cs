@@ -32,6 +32,7 @@ public sealed class InkSurface : FrameworkElement
     private readonly Dictionary<int, DrawingVisual> _screenVisuals = new();
     private readonly Dictionary<int, ImageSource> _screenImages = new();
     private readonly Dictionary<int, DrawingVisual> _map = new();
+    private readonly Dictionary<int, DrawingVisual> _textVisuals = new();
     private readonly double[] _samples = new double[128];
     private int _sampleCount;
 
@@ -52,6 +53,14 @@ public sealed class InkSurface : FrameworkElement
     private Pt _moveGrabOffset;
     private Pt _moveCurrent;
     private bool _capturing;
+
+    // Texto: a OverlayWindow dona do TextBox coordena via estes membros.
+    // IsEditingText = caixa aberta; CommitEditRequested = fecha e commita
+    // (chamado no início de cada novo gesto — clique fora finaliza a edição).
+    // TextEditRequested = clique com a ferramenta Texto (coords LOCAIS).
+    public bool IsEditingText { get; set; }
+    public Action? CommitEditRequested { get; set; }
+    public event Action<Pt>? TextEditRequested;
 
     // Frame de coordenadas deste overlay: input local (DIP) → global (px da
     // tela virtual) na entrada; global → local na renderização. Documento
@@ -125,9 +134,12 @@ public sealed class InkSurface : FrameworkElement
         state.ScreenAdded += OnScreenAdded;
         state.ScreensRemoved += OnScreensRemoved;
         state.ScreenMoved += OnScreenMoved;
+        state.TextAdded += OnTextAdded;
+        state.TextsRemoved += OnTextsRemoved;
         state.StateChanged += RefreshSelection;
         foreach (var s in state.Strokes) OnStrokeAdded(s);
         foreach (var screen in state.Screens) OnScreenAdded(screen);
+        foreach (var t in state.Texts) OnTextAdded(t);
         RefreshSelection();
     }
 
@@ -137,6 +149,7 @@ public sealed class InkSurface : FrameworkElement
     {
         _finalized.Children.Clear();
         _map.Clear();
+        _textVisuals.Clear();
         _screens.Children.Clear();
         _screenVisuals.Clear();
         _screenImages.Clear();
@@ -154,6 +167,8 @@ public sealed class InkSurface : FrameworkElement
         _attached.ScreenAdded -= OnScreenAdded;
         _attached.ScreensRemoved -= OnScreensRemoved;
         _attached.ScreenMoved -= OnScreenMoved;
+        _attached.TextAdded -= OnTextAdded;
+        _attached.TextsRemoved -= OnTextsRemoved;
         _attached.StateChanged -= RefreshSelection;
         _attached = null;
         _state = null;
@@ -210,6 +225,24 @@ public sealed class InkSurface : FrameworkElement
         }
     }
 
+    private void OnTextAdded(TextObject text)
+    {
+        // Texto em px globais → posição/tamanho locais deste overlay.
+        var local = Frame.ToLocal(new Pt(text.X, text.Y));
+        var visual = WpfStrokeRenderer.BuildTextVisual(local,
+            text.FontSizePx / Frame.PxPerDipX, text.FontFamily, text.Color, text.Content,
+            Frame.PxPerDipX);
+        _finalized.Children.Add(visual);
+        _textVisuals[text.Id] = visual;
+    }
+
+    private void OnTextsRemoved(IReadOnlyList<TextObject> list)
+    {
+        foreach (var t in list)
+            if (_textVisuals.Remove(t.Id, out var visual))
+                _finalized.Children.Remove(visual);
+    }
+
     // Caminho de teste headless: mesmo commit do gesto real, sem HWND/eventos.
     // Pontos em coords LOCAIS (como o gesto); commit converte p/ global.
     // Com Frame identidade (default), local == global (testes atuais intactos).
@@ -235,6 +268,16 @@ public sealed class InkSurface : FrameworkElement
     }
 
     public void SimulateErase(Pt a, Pt b) => _state?.EraseSegment(Frame.ToGlobal(a), Frame.ToGlobal(b));
+
+    // Caminho de teste: clique com a ferramenta Texto (mesmo evento do gesto
+    // real, sem HWND). Não cria stroke nem captura mouse.
+    public void SimulateTextRequest(Pt local)
+    {
+        if (_state is null || _state.ActiveTool != ToolKind.Text) return;
+        if (IsEditingText)
+            CommitEditRequested?.Invoke();
+        TextEditRequested?.Invoke(local);
+    }
 
     protected override void OnStylusDown(StylusDownEventArgs e)
     {
@@ -316,9 +359,20 @@ public sealed class InkSurface : FrameworkElement
     private void BeginAt(Pt p, string src, Action capture)
     {
         if (_state is null) return;
+        // Qualquer novo gesto finaliza antes a edição de texto pendente
+        // (clique fora do campo commita; síncrono, sem mudar a ferramenta).
+        if (IsEditingText)
+            CommitEditRequested?.Invoke();
         // p = coords locais (DIP desta janela); g = espaço global do documento.
         Pt g = Frame.ToGlobal(p);
         Log.Info($"input begin tool={_state.ActiveTool} src={src} x={g.X:F0} y={g.Y:F0}");
+        if (_state.ActiveTool == ToolKind.Text)
+        {
+            // Sem mouse capture de propósito: a caixa de edição (elemento irmão
+            // na janela) precisa do mouse p/ caret/seleção de texto.
+            TextEditRequested?.Invoke(p);
+            return;
+        }
         if (_state.ActiveTool == ToolKind.Select)
         {
             if (_capturing) return; // captura em voo: gesto ignorado (sem deadlock)
@@ -363,6 +417,7 @@ public sealed class InkSurface : FrameworkElement
     private void MoveAt(Pt p)
     {
         if (_state is null) return;
+        if (IsEditingText || _state.ActiveTool == ToolKind.Text) return; // texto: sem gesto
         if (_movingScreen is not null)
         {
             // Arrasto ao vivo move SÓ o visual (Offset, sem re-render); o modelo
@@ -414,6 +469,8 @@ public sealed class InkSurface : FrameworkElement
 
     private void EndAt(Pt p)
     {
+        if (_state is null) return;
+        if (_state.ActiveTool == ToolKind.Text) return; // texto: sem gesto
         if (_movingScreen is not null && _state is not null)
         {
             _state.MoveScreen(_movingScreen.Id, _moveCurrent.X, _moveCurrent.Y);

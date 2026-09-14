@@ -46,6 +46,35 @@ public static class OverlayBehavior
 
     public static bool IsForeground(IntPtr hwnd) => Native.GetForegroundWindow() == hwnd;
 
+    // Edição de texto: o overlay nasce NOACTIVATE (nunca rouba foco), mas um
+    // TextBox só recebe keystrokes com a janela ativável+ativa. Liga/desliga o
+    // bit ao redor da sessão de edição (com FRAMECHANGED, como o click-through).
+    public static void SetActivatable(IntPtr hwnd, bool activatable)
+    {
+        long ex = Native.GetExStyle(hwnd);
+        ex = activatable ? ex & ~Native.WS_EX_NOACTIVATE : ex | Native.WS_EX_NOACTIVATE;
+        Native.SetExStyle(hwnd, ex);
+        Native.SetWindowPos(hwnd, Native.HWND_TOPMOST, 0, 0, 0, 0,
+            Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOACTIVATE | Native.SWP_FRAMECHANGED);
+    }
+
+    public static bool IsActivatable(IntPtr hwnd) =>
+        (Native.GetExStyle(hwnd) & Native.WS_EX_NOACTIVATE) == 0;
+
+    // Devolve o foco ao app anterior ao fim da edição (best-effort: o OS pode
+    // recusar; quem estava em foreground pode ceder livremente).
+    public static IntPtr SaveForeground()
+    {
+        try { return Native.GetForegroundWindow(); }
+        catch { return IntPtr.Zero; }
+    }
+
+    public static bool RestoreForeground(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero) return false;
+        try { return Native.SetForegroundWindow(hwnd); }
+        catch { return false; }
+    }
     public static int MonitorCount()
     {
         try { return Math.Max(1, Native.GetSystemMetrics(Native.SM_CMONITORS)); }

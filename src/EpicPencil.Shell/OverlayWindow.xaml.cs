@@ -1,6 +1,7 @@
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Interop;
+using EpicPencil.Core;
 using EpicPencil.Windows;
 
 namespace EpicPencil.Shell;
@@ -11,6 +12,16 @@ public partial class OverlayWindow : Window
     private readonly MonitorInfo _monitor;
     private IntPtr _hwnd;
     private HwndSource? _source;
+
+    // Sessão de edição de texto (ferramenta Texto): o TextBox vive nesta janela
+    // (elemento irmão da superfície — nunca um visual permanente do canvas).
+    // O overlay nasce NOACTIVATE, mas keystrokes exigem janela ativa: a sessão
+    // limpa o bit, ativa, foca a caixa e restaura tudo ao fechar (best-effort).
+    private bool _editingText;
+    private Pt _editLocal;
+    private float _editDip;
+    private Rgba _editColor;
+    private IntPtr _prevForeground;
 
     // Topologia mudou (plug/unplug/resolução/escala/primário): o App reconstrói
     // os overlays com debounce. Evento de instância (App assina cada overlay).
@@ -32,6 +43,7 @@ public partial class OverlayWindow : Window
         // Exceção: fechamento programado do rebuild de topologia (SuppressCloseShutdown).
         Closed += (_, _) =>
         {
+            CancelEdit(); // janela fechando: descarta rascunho sem commitar
             _source?.RemoveHook(WndHook);
             _source = null;
             // O AppState sobrevive ao rebuild: solta as assinaturas p/ a
@@ -55,6 +67,12 @@ public partial class OverlayWindow : Window
         AddHandler(PreviewMouseDownEvent, new MouseButtonEventHandler((s, e) =>
             Log.Info($"janela PreviewMouseDown btn={e.ChangedButton} x={e.GetPosition(this).X:F0} y={e.GetPosition(this).Y:F0}")),
             handledEventsToo: true);
+        Surface.TextEditRequested += OnTextEditRequested;
+        Surface.CommitEditRequested = CommitEdit;
+        TextEditor.PreviewKeyDown += OnEditorKey;
+        TextEditor.LostKeyboardFocus += (_, _) => CommitEdit();
+        // Re-clique na caixa (ex. Alt+Tab no meio da edição): garante foreground.
+        TextEditor.PreviewMouseLeftButtonDown += (_, _) => Activate();
     }
 
     public InkSurface SurfaceControl => Surface;
@@ -97,6 +115,85 @@ public partial class OverlayWindow : Window
         foreach (var line in OverlayBehavior.DescribeZOrder(_hwnd, toolbarHwnd, 14))
             Log.Info("  " + line);
         return desc;
+    }
+
+    // Abre a caixa exatamente no ponto clicado (DIPs locais). Fonte/cor/
+    // tamanho congelados do AppState: textos futuros usam os novos valores,
+    // os existentes nunca mudam. Caixa nativa só durante a edição.
+    private void OnTextEditRequested(Pt local)
+    {
+        CommitEdit(); // segurança: nunca duas caixas (BeginAt já commitou)
+        if (_hwnd == IntPtr.Zero) return;
+        _editLocal = local;
+        _editDip = _state.ActiveFontSizeDip;
+        _editColor = _state.ActiveColor;
+        TextEditor.FontFamily = TextFonts.Family;
+        TextEditor.FontSize = _editDip;
+        TextEditor.Foreground = new System.Windows.Media.SolidColorBrush(
+            System.Windows.Media.Color.FromRgb(_editColor.R, _editColor.G, _editColor.B));
+        TextEditor.Text = string.Empty;
+        TextEditor.Margin = new Thickness(local.X, local.Y, 0, 0);
+        TextEditor.Visibility = Visibility.Visible;
+        Surface.IsEditingText = true;
+        Surface.CommitEditRequested = CommitEdit;
+        _prevForeground = OverlayBehavior.SaveForeground();
+        OverlayBehavior.SetActivatable(_hwnd, true);
+        Activate();
+        TextEditor.Focus();
+        _editingText = true;
+        Log.Info($"edição texto aberta local=({local.X:F0},{local.Y:F0}) fonte={_editDip:F0}dip " +
+            $"fg={OverlayBehavior.Describe(_hwnd)}");
+    }
+
+    private void OnEditorKey(object sender, KeyEventArgs e)
+    {
+        // Enter commita, Escape cancela. TODO o resto (letras de atalho,
+        // Ctrl+C/X/V/Z nativos) pertence à caixa — nunca roteado p/ o app.
+        if (e.Key == Key.Enter) { CommitEdit(); e.Handled = true; }
+        else if (e.Key == Key.Escape) { CancelEdit(); e.Handled = true; }
+    }
+
+    // Commit: fecha a caixa e cria o TextObject (posição/tamanho em px globais
+    // na escala deste monitor). Vazio = descarta sem objeto e sem undo.
+    private void CommitEdit()
+    {
+        if (!_editingText) return;
+        _editingText = false;
+        string text = TextEditor.Text;
+        float dip = _editDip;
+        Rgba color = _editColor;
+        Pt local = _editLocal;
+        HideEditorChrome();
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            Log.Info("texto vazio descartado (sem objeto, sem undo)");
+            return;
+        }
+        var g = Surface.Frame.ToGlobal(local);
+        _state.AddText(text, g.X, g.Y, dip * Surface.Frame.PxPerDipX,
+            TextFonts.PreferredFamily, color);
+    }
+
+    private void CancelEdit()
+    {
+        if (!_editingText) return;
+        _editingText = false;
+        HideEditorChrome();
+        Log.Info("edição de texto cancelada (Escape)");
+    }
+
+    private void HideEditorChrome()
+    {
+        TextEditor.Visibility = Visibility.Collapsed;
+        Surface.IsEditingText = false;
+        Surface.CommitEditRequested = null;
+        if (_hwnd != IntPtr.Zero)
+        {
+            OverlayBehavior.SetActivatable(_hwnd, false);
+            if (!OverlayBehavior.RestoreForeground(_prevForeground))
+                Log.Info("foreground anterior não restaurado (OS recusou; Alt+Tab p/ voltar)");
+        }
+        _prevForeground = IntPtr.Zero;
     }
 
     private void OnSourceInitialized(object? sender, EventArgs e)

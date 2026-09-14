@@ -39,6 +39,7 @@ public partial class ToolbarWindow : Window
         [ToolKind.Arrow] = "Seta",
         [ToolKind.Select] = "Seleção",
         [ToolKind.EraserStroke] = "Borracha",
+        [ToolKind.Text] = "Texto",
     };
 
     // Animação de collapse (130 ms, ease-out). Só apresentação; headless nunca alterna.
@@ -67,6 +68,10 @@ public partial class ToolbarWindow : Window
         // Assinado aqui (não no XAML): o Value inicial dispara ValueChanged
         // durante InitializeComponent, antes de _state existir (NRE → hang).
         ThicknessSlider.ValueChanged += OnThicknessChanged;
+        foreach (int size in new[] { 12, 16, 20, 24, 32, 40, 48, 64 })
+            FontSizeBox.Items.Add(size.ToString());
+        FontSizeBox.SelectedItem = ((int)_state.ActiveFontSizeDip).ToString();
+        FontSizeBox.SelectionChanged += OnFontSizeChanged;
         foreach (var color in Palette)
         {
             var swatch = new Button
@@ -126,6 +131,15 @@ public partial class ToolbarWindow : Window
     private void OnToolLine(object sender, RoutedEventArgs e) => _state.SetTool(ToolKind.Line);
     private void OnToolArrow(object sender, RoutedEventArgs e) => _state.SetTool(ToolKind.Arrow);
     private void OnToolSelect(object sender, RoutedEventArgs e) => _state.SetTool(ToolKind.Select);
+    private void OnToolText(object sender, RoutedEventArgs e) => ActivateTextTool();
+    // Texto exige input do overlay: ao ativá-la garante modo desenho visível
+    // (sem isso, no modo interagir o clique atravessaria e nada abriria).
+    private void ActivateTextTool()
+    {
+        _state.SetTool(ToolKind.Text);
+        _state.SetInkVisible(true);
+        _state.SetDrawMode(true);
+    }
     private void OnDeleteScreen(object sender, RoutedEventArgs e) => _state.DeleteSelectedScreen();
     private void OnToolEraser(object sender, RoutedEventArgs e) => _state.SetTool(ToolKind.EraserStroke);
     private void OnThicknessChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
@@ -133,6 +147,11 @@ public partial class ToolbarWindow : Window
         if (_syncingSlider) return;
         _state.ActiveWidth = (float)Math.Round(e.NewValue);
         RefreshStatus(); // ActiveWidth não dispara StateChanged (só presets)
+    }
+    private void OnFontSizeChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (FontSizeBox.SelectedItem is string s && float.TryParse(s, out float size))
+            _state.SetActiveFontSize(size);
     }
     private void OnUndo(object sender, RoutedEventArgs e) => _state.Undo();
     private void OnRedo(object sender, RoutedEventArgs e) => _state.Redo();
@@ -208,6 +227,7 @@ public partial class ToolbarWindow : Window
             case HotkeyAction.ToolLine: _state.SetTool(ToolKind.Line); break;
             case HotkeyAction.ToolArrow: _state.SetTool(ToolKind.Arrow); break;
             case HotkeyAction.ToolSelect: _state.SetTool(ToolKind.Select); break;
+            case HotkeyAction.ToolText: ActivateTextTool(); break;
             case HotkeyAction.ToolEraser: _state.SetTool(ToolKind.EraserStroke); break;
             case HotkeyAction.WidthPreset0: _state.SetActiveWidthPreset(0); break;
             case HotkeyAction.WidthPreset1: _state.SetActiveWidthPreset(1); break;
@@ -226,58 +246,70 @@ public partial class ToolbarWindow : Window
         e.Handled = true;
     }
 
-    // Ctrl+C: com seleção → bytes do ScreenObject (pixels exatos, sem re-BitBlt);
-    // sem seleção → BitBlt one-shot da tela virtual (toolbar escondida pelo flow).
-    // Nunca move/apaga/altera a seleção nem troca a ferramenta.
+    // Bitmap de exportação: captura fresca da região + conteúdo do modelo.
+    // Região = bounds atuais da seleção (ou tela virtual sem seleção). Os
+    // overlays são ocultados durante o BitBlt (nenhum chrome nosso entra nos
+    // pixels, em qualquer driver/GPU); capturas, tinta e textos vêm do modelo.
+    // Não move, apaga, altera a seleção nem troca a ferramenta. Null se falhar.
+    private async Task<System.Windows.Media.Imaging.BitmapSource?> RenderExportBitmapAsync()
+    {
+        var sel = CaptureExport.TryGetSelectedScreen(_state);
+        RectD region = sel?.Bounds
+            ?? CaptureExport.GetFullVirtualRect(MonitorLayout.Enumerate());
+        var flow = ExportFlow ??= new ScreenCaptureFlow(this);
+        SetOverlaysVisible(false);
+        CapturedImage? img;
+        try { img = await flow.CaptureRegionGlobalPxAsync(region); }
+        finally { SetOverlaysVisible(true); }
+        if (img is null) return null;
+        var (l, t, _, _) = CaptureExport.SnapToPixels(region);
+        var captured = CaptureExport.ToBitmapSource(img.Bgra, img.PixelWidth, img.PixelHeight);
+        return CaptureExport.CompositeModel(captured, l, t,
+            _state.Strokes, _state.Screens, _state.Texts);
+    }
+
+    // Oculta/mostra os overlays p/ o BitBlt não carregar chrome (determinístico;
+    // o flow já esconde a toolbar). Hide/Show síncronos + 80 ms do flow p/ o DWM
+    // recompor sem nossas janelas. Restaura sempre (finally no chamador).
+    internal void SetOverlaysVisible(bool visible)
+    {
+        foreach (var o in _overlays)
+        {
+            if (visible) o.Show();
+            else o.Hide();
+        }
+    }
+
+    // Ctrl+C: vai ao clipboard do Windows (Ctrl+V no Paint/Word/Discord).
     private async Task CopyCaptureAsync()
     {
         try
         {
-            var sel = CaptureExport.TryGetSelectedScreen(_state);
-            if (sel is not null)
-            {
-                CaptureExport.CopyToClipboard(
-                    CaptureExport.ToBitmapSource(sel.Bgra, sel.PixelWidth, sel.PixelHeight));
-                return;
-            }
-            var flow = ExportFlow ??= new ScreenCaptureFlow(this);
-            var rect = CaptureExport.GetFullVirtualRect(MonitorLayout.Enumerate());
-            var img = await flow.CaptureRegionGlobalPxAsync(rect);
-            if (img is null)
+            var bmp = await RenderExportBitmapAsync();
+            if (bmp is null)
             {
                 Log.Warn("Ctrl+C cancelado: captura da tela falhou");
                 return;
             }
-            CaptureExport.CopyToClipboard(
-                CaptureExport.ToBitmapSource(img.Bgra, img.PixelWidth, img.PixelHeight));
+            CaptureExport.CopyToClipboard(bmp);
         }
         catch (Exception ex) { Log.Error("falha no Ctrl+C", ex); }
     }
 
-    // Ctrl+S: mesma regra de região do Ctrl+C; PNG via diálogo padrão do Windows.
+    // Ctrl+S: PNG via diálogo padrão do Windows.
     private async Task SaveCaptureAsync()
     {
         try
         {
             var sel = CaptureExport.TryGetSelectedScreen(_state);
-            if (sel is not null)
-            {
-                CaptureExport.SaveWithDialog(this,
-                    CaptureExport.ToBitmapSource(sel.Bgra, sel.PixelWidth, sel.PixelHeight),
-                    "captura-selecao.png");
-                return;
-            }
-            var flow = ExportFlow ??= new ScreenCaptureFlow(this);
-            var rect = CaptureExport.GetFullVirtualRect(MonitorLayout.Enumerate());
-            var img = await flow.CaptureRegionGlobalPxAsync(rect);
-            if (img is null)
+            var bmp = await RenderExportBitmapAsync();
+            if (bmp is null)
             {
                 Log.Warn("Ctrl+S cancelado: captura da tela falhou");
                 return;
             }
-            CaptureExport.SaveWithDialog(this,
-                CaptureExport.ToBitmapSource(img.Bgra, img.PixelWidth, img.PixelHeight),
-                "captura.png");
+            CaptureExport.SaveWithDialog(this, bmp,
+                sel is not null ? "captura-selecao.png" : "captura.png");
         }
         catch (Exception ex) { Log.Error("falha no Ctrl+S", ex); }
     }
@@ -291,6 +323,7 @@ public partial class ToolbarWindow : Window
         MarkSelected(ArrowButton, _state.ActiveTool == ToolKind.Arrow);
         MarkSelected(SelectButton, _state.ActiveTool == ToolKind.Select);
         MarkSelected(EraserButton, _state.ActiveTool == ToolKind.EraserStroke);
+        MarkSelected(TextButton, _state.ActiveTool == ToolKind.Text);
         MarkSelected(HideButton, _state.InkVisible);
         var c = _state.ActiveColor;
         foreach (var sw in _swatches)
@@ -321,6 +354,7 @@ public partial class ToolbarWindow : Window
             $"tool={_state.ActiveTool} cor=#{c.R:X2}{c.G:X2}{c.B:X2} w={_state.ActiveWidth:F1} " +
             $"strokes={_state.StrokeCount} pts={_state.PointCount} " +
             $"caps={_state.ScreenCount} sel={_state.SelectedScreenId?.ToString() ?? "-"} " +
+            $"txt={_state.TextCount} f={_state.ActiveFontSizeDip:F0} " +
             $"p50={_primary.SurfaceControl.ProcessingP50Ms:F2}ms";
     }
 

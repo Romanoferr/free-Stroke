@@ -17,6 +17,8 @@ public sealed class AppState
     public event Action<ScreenObject>? ScreenAdded;
     public event Action<IReadOnlyList<ScreenObject>>? ScreensRemoved;
     public event Action<ScreenObject>? ScreenMoved;
+    public event Action<TextObject>? TextAdded;
+    public event Action<IReadOnlyList<TextObject>>? TextsRemoved;
     public event Action? StateChanged;
 
     public ToolKind ActiveTool { get; private set; } = ToolKind.Pen;
@@ -55,11 +57,23 @@ public sealed class AppState
         StateChanged?.Invoke();
     }
 
+    // Tamanho da fonte p/ novos textos (DIPs; o commit converte p/ px globais
+    // na escala do monitor do clique). Só afeta criações futuras.
+    public float ActiveFontSizeDip { get; private set; } = 20f;
+
+    public void SetActiveFontSize(float sizeDip)
+    {
+        ActiveFontSizeDip = Math.Clamp(sizeDip, 8f, 128f);
+        Log.Info($"fonte texto {ActiveFontSizeDip:F0}dip");
+    }
+
     public int StrokeCount => _doc.Count;
     public int PointCount => _doc.TotalPoints();
     public IReadOnlyList<Stroke> Strokes => _doc.Strokes;
     public int ScreenCount => _doc.ScreenCount;
     public IReadOnlyList<ScreenObject> Screens => _doc.Screens;
+    public int TextCount => _doc.TextCount;
+    public IReadOnlyList<TextObject> Texts => _doc.Texts;
     public int? SelectedScreenId { get; private set; }
     public bool CanUndo => _undo.CanUndo;
     public bool CanRedo => _undo.CanRedo;
@@ -136,11 +150,12 @@ public sealed class AppState
 
     public void Clear()
     {
-        if (_doc.Count == 0) return;
+        if (_doc.Count == 0 && _doc.TextCount == 0) return;
         var cmd = new ClearAllCommand(_doc);
         _undo.Execute(cmd, _doc);
-        Log.Info($"clear removeu {cmd.Affected.Count} stroke(s)");
-        StrokesRemoved?.Invoke(cmd.Affected);
+        Log.Info($"clear removeu {cmd.Affected.Count} stroke(s) e {cmd.AffectedTexts.Count} texto(s)");
+        if (cmd.Affected.Count > 0) StrokesRemoved?.Invoke(cmd.Affected);
+        if (cmd.AffectedTexts.Count > 0) TextsRemoved?.Invoke(cmd.AffectedTexts);
         StateChanged?.Invoke();
     }
 
@@ -153,6 +168,9 @@ public sealed class AppState
             case AddStrokeCommand: // undo de Add remove
                 StrokesRemoved?.Invoke(cmd.Affected);
                 break;
+            case AddTextCommand: // undo de AddText remove
+                TextsRemoved?.Invoke(cmd.AffectedTexts);
+                break;
             case AddScreenCommand:
                 ScreensRemoved?.Invoke(cmd.AffectedScreens);
                 if (SelectedScreenId.HasValue && cmd.AffectedScreens.Any(s => s.Id == SelectedScreenId))
@@ -164,6 +182,7 @@ public sealed class AppState
             default: // undo de Erase/Clear/RemoveScreen restaura
                 foreach (var s in cmd.Affected) StrokeAdded?.Invoke(s);
                 foreach (var s in cmd.AffectedScreens) ScreenAdded?.Invoke(s);
+                foreach (var t in cmd.AffectedTexts) TextAdded?.Invoke(t);
                 break;
         }
         StateChanged?.Invoke();
@@ -178,6 +197,9 @@ public sealed class AppState
             case AddStrokeCommand:
                 foreach (var s in cmd.Affected) StrokeAdded?.Invoke(s);
                 break;
+            case AddTextCommand:
+                foreach (var t in cmd.AffectedTexts) TextAdded?.Invoke(t);
+                break;
             case AddScreenCommand:
                 foreach (var s in cmd.AffectedScreens) ScreenAdded?.Invoke(s);
                 break;
@@ -187,6 +209,7 @@ public sealed class AppState
             default: // redo repete o Do: Erase/Clear/RemoveScreen remove
                 if (cmd.Affected.Count > 0) StrokesRemoved?.Invoke(cmd.Affected);
                 if (cmd.AffectedScreens.Count > 0) ScreensRemoved?.Invoke(cmd.AffectedScreens);
+                if (cmd.AffectedTexts.Count > 0) TextsRemoved?.Invoke(cmd.AffectedTexts);
                 break;
         }
         StateChanged?.Invoke();
@@ -237,5 +260,25 @@ public sealed class AppState
         SelectedScreenId = null;
         StateChanged?.Invoke();
         return true;
+    }
+
+    // Commit de texto (posição em px globais, tamanho em px globais). Vazio
+    // nunca vira objeto: retorna null sem tocar no undo. Cor/tamanho/fonte são
+    // capturados no commit — textos existentes nunca mudam.
+    public TextObject? AddText(string content, float x, float y,
+        float fontSizePx, string fontFamily, Rgba color)
+    {
+        if (string.IsNullOrWhiteSpace(content))
+        {
+            Log.Info("texto vazio descartado (sem objeto, sem undo)");
+            return null;
+        }
+        var text = new TextObject(_doc.NextId(), x, y, content.TrimEnd(),
+            fontSizePx, fontFamily, color);
+        _undo.Execute(new AddTextCommand(text), _doc);
+        Log.Info($"texto id={text.Id} \"{text.Content}\" {fontSizePx:F0}px em ({x:F0},{y:F0})");
+        TextAdded?.Invoke(text);
+        StateChanged?.Invoke();
+        return text;
     }
 }

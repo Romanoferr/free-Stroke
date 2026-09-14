@@ -254,6 +254,11 @@
                         <Path Data="M6.5,11 L10,4.5 L14,8.5 L10.5,14.5 L5.5,14.5 Z M6.5,11 L10.5,14.5"
                               Stroke="#EDEDED" StrokeThickness="1.5" StrokeLineJoin="Round" Fill="Transparent"/>
                     </Button>
+                    <Button x:Name="TextButton" Style="{StaticResource ToolIconButton}"
+                            Click="OnToolText" ToolTip="Texto (T)">
+                        <TextBlock Text="T" FontFamily="Consolas" FontWeight="Bold" FontSize="16"
+                                   Foreground="#EDEDED" VerticalAlignment="Center"/>
+                    </Button>
                 </StackPanel>
 
                 <TextBlock Text="COR E ESPESSURA (1–10)" Foreground="#8F8F8F" FontSize="9.5" Margin="4,6,0,2"/>
@@ -269,8 +274,16 @@
                                ToolTip="Espessura atual"/>
                 </StackPanel>
 
-                <TextBlock Text="AÇÕES" Foreground="#8F8F8F" FontSize="9.5" Margin="4,6,0,2"/>
+                <TextBlock Text="TEXTO (SPACE MONO)" Foreground="#8F8F8F" FontSize="9.5" Margin="4,6,0,2"/>
                 <StackPanel Orientation="Horizontal">
+                    <TextBlock Text="Tamanho:" Foreground="#CFCFCF" FontSize="12"
+                               VerticalAlignment="Center" Margin="4,0,6,0"/>
+                    <ComboBox x:Name="FontSizeBox" Width="90" VerticalAlignment="Center"
+                              Background="#30FFFFFF" Foreground="#1A1A1A" FontSize="12"
+                              ToolTip="Tamanho da fonte p/ novos textos"/>
+                </StackPanel>
+
+                <TextBlock Text="AÇÕES" Foreground="#8F8F8F" FontSize="9.5" Margin="4,6,0,2"/>                <StackPanel Orientation="Horizontal">
                     <Button Style="{StaticResource ToolIconButton}" Click="OnUndo" ToolTip="Desfazer (Ctrl+Z)">
                         <Path Data="M7,3.5 L3.5,7 L7,10.5 M3.5,7 H10 C13,7 13,12.5 9,12.5 L6.5,12.5"
                               Stroke="#EDEDED" StrokeThickness="1.6" StrokeStartLineCap="Round"

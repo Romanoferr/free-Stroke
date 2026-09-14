@@ -66,7 +66,10 @@ arrastável pelo grip (⋮⋮) para qualquer posição da tela:
 - **Recolher/expandir** (chevron no cabeçalho, ~130 ms): recolhida vira uma
   pílula mínima (grip + cor ativa + ferramenta + ponto de modo + expandir).
 - **Ferramentas em ícones vetoriais** (sem dependências externas) com tooltip +
-  atalho; ferramenta ativa com destaque azul; hover/pressed sutis.
+  atalho; ferramenta ativa com destaque azul; hover/pressed sutis. Inclui
+  **Texto (T)**: clique no canvas abre caixa de edição (Enter confirma,
+  Escape cancela, clicar fora confirma); fonte **Space Mono embutida**
+  (fallback Consolas) com tamanhos 12–64 selecionáveis na linha TEXTO.
 - **Cor e espessura**: 6 swatches circulares (anel branco = selecionada) +
   slider de espessura 1–10 (presets maiores, ex. marca-texto, pinam no máximo
   até o primeiro ajuste).
@@ -76,9 +79,12 @@ arrastável pelo grip (⋮⋮) para qualquer posição da tela:
 - Mostrar/ocultar também pelo dot verde/laranja da barra recolhida e pelos
   atalhos locais **PgUp**, **`'`** (aspas) ou **F9** — funcionam com a toolbar
   recolhida (mesma janela); **Esc** oculta e libera o mouse.
-- Hotkeys locais inalterados (P/B/H/L/S/V/E, C, Ctrl+Z/Y) + exportação da
-  captura: **Ctrl+C** copia (seleção ou tela inteira) e **Ctrl+S** salva PNG
-  (diálogo padrão). Tecla isolada ≠ combinação (C≠Ctrl+C, S≠Ctrl+S).
+- Hotkeys locais inalterados (P/B/H/L/S/V/E, C, Ctrl+Z/Y) + **Texto (T)** e
+  exportação da captura: **Ctrl+C** copia e **Ctrl+S** salva PNG (diálogo
+  padrão) — região = captura fresca da seleção (ou tela inteira) **com a
+  tinta e os textos compostos por cima e sem o tracejado de seleção**
+  (overlays ocultados durante o BitBlt). Tecla isolada ≠ combinação
+  (C≠Ctrl+C, S≠Ctrl+S, T≠Ctrl+T).
 
 ## Multi-monitor
 

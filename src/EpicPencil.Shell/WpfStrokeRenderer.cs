@@ -43,6 +43,30 @@ internal static class WpfStrokeRenderer
         return bmp;
     }
 
+    // Texto finalizado: FormattedText (nítido em qualquer DPI via pixelsPerDip),
+    // mesma família da edição. emSize em DIPs na tela, em px na exportação.
+    public static FormattedText BuildFormattedText(
+        string text, string familyName, double emSize, Rgba color, double pixelsPerDip)
+    {
+        var typeface = new Typeface(TextFonts.ResolveFamily(familyName),
+            FontStyles.Normal, FontWeights.Normal, FontStretches.Normal);
+        return new FormattedText(text, System.Globalization.CultureInfo.InvariantCulture,
+            FlowDirection.LeftToRight, typeface, emSize,
+            new SolidColorBrush(Color.FromArgb(color.A, color.R, color.G, color.B)),
+            pixelsPerDip);
+    }
+
+    // Visual do texto no overlay: posição/tamanho locais (DIP) deste monitor.
+    public static DrawingVisual BuildTextVisual(Pt localPos, double dipSize,
+        string familyName, Rgba color, string text, double pixelsPerDip)
+    {
+        var visual = new DrawingVisual();
+        using (var dc = visual.RenderOpen())
+            dc.DrawText(BuildFormattedText(text, familyName, dipSize, color, pixelsPerDip),
+                new System.Windows.Point(localPos.X, localPos.Y));
+        return visual;
+    }
+
     // Visual da captura: imagem em px, posicionada via Offset local (DIP).
     // Mover = trocar Offset, sem re-render. Rect local explícito
     // (multi-monitor: cada overlay converte os px globais p/ seu DIP).
@@ -80,6 +104,14 @@ internal static class WpfStrokeRenderer
         Rgba color, float width, ToolKind tool, float opacity)
     {
         using var dc = visual.RenderOpen();
+        RenderStrokeInto(dc, points, color, width, tool, opacity);
+    }
+
+    // Núcleo de desenho reutilizável num DrawingContext arbitrário (exportação
+    // compõe os strokes sobre o bitmap capturado; nunca desenha chrome de seleção).
+    public static void RenderStrokeInto(DrawingContext dc, IReadOnlyList<Pt> points,
+        Rgba color, float width, ToolKind tool, float opacity)
+    {
         var pen = GetPen(color, width, opacity, tool);
         if (points.Count == 1)
         {

@@ -5,6 +5,16 @@
     <ProjectReference Include="..\EpicPencil.Windows\EpicPencil.Windows.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Space Mono embutida (OFL — licença em Fonts/OFL.txt acompanha a cópia).
+         Resource: vai dentro do assembly, sem depender do Windows do usuário. -->
+    <Resource Include="Fonts\SpaceMono-Regular.ttf" />
+    <Resource Include="Fonts\SpaceMono-Bold.ttf" />
+    <Content Include="Fonts\OFL.txt">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net9.0-windows</TargetFramework>

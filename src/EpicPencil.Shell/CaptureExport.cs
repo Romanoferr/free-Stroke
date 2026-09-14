@@ -1,14 +1,14 @@
 // Exportação da captura atual (Ctrl+C copia, Ctrl+S salva PNG).
-// Definição de "seleção atual" (REQ4): o ScreenObject cujo Id ==
-// AppState.SelectedScreenId (o mesmo que desenha o tracejado vermelho).
-//   Existe seleção? SIM → reutiliza os bytes BGRA do ScreenObject (cópia exata
-//     capturada no marquee; mover o objeto muda só X/Y, os pixels seguem
-//     intactos — sem re-BitBlt, sem custo, sem erro de DPI).
-//   NÃO → BitBlt one-shot sob demanda da TELA VIRTUAL completa (união dos
-//     bounds físicos de todos os monitores, coords negativas OK).
+// Pipeline (sem chrome de seleção, COM a tinta do canvas):
+//   1. Região = bounds ATUAIS da seleção (ou tela virtual completa sem seleção).
+//   2. BitBlt one-shot sob demanda da região. O overlay layered nunca entra no
+//      BitBlt (sem CAPTUREBLT) — por isso nem o tracejado vermelho nem a tinta
+//      aparecem nos pixels crus.
+//   3. Os strokes do documento que cruzam a região são renderizados do MODELO
+//      sobre o bitmap (coords locais = global − origem do BitBlt).
 // Sem captura contínua em background (REQ6): tudo acontece no gesto do usuário.
-// Multi-monitor/DPI (REQ5): os dois caminhos já operam em pixels físicos
-// globais — o BitBlt recebe coords virtuais e o objeto guarda px de origem.
+// Multi-monitor/DPI (REQ5): região e strokes em pixels físicos globais; o
+// BitBlt recebe coords virtuais (negativas OK), sem matemática de DPI.
 
 using System.IO;
 using System.Windows;
@@ -42,6 +42,79 @@ internal static class CaptureExport
     public static BitmapSource ToBitmapSource(byte[] bgra, int pixelWidth, int pixelHeight) =>
         WpfStrokeRenderer.CreateBitmap(bgra, pixelWidth, pixelHeight) as BitmapSource
         ?? throw new InvalidOperationException("conversão BGRA→BitmapSource falhou");
+
+    // Arredondamento idêntico ao do ScreenCaptureFlow: a origem usada no
+    // mapeamento dos strokes precisa coincidir EXATAMENTE com a do BitBlt
+    // (Math.Round determinístico nos mesmos floats → mesmos ints).
+    public static (int L, int T, int W, int H) SnapToPixels(RectD globalPx) =>
+    (
+        (int)Math.Round(globalPx.X),
+        (int)Math.Round(globalPx.Y),
+        Math.Max(1, (int)Math.Round(globalPx.Width)),
+        Math.Max(1, (int)Math.Round(globalPx.Height))
+    );
+
+    // Compõe o modelo sobre o bitmap capturado (z-order da tela: capturas,
+    // depois tinta, depois textos). Retorna a base intacta (fast path) quando
+    // nada cruza a região. Nunca desenha chrome de seleção — só pixels da tela
+    // + conteúdo do modelo.
+    public static BitmapSource CompositeModel(
+        BitmapSource captured, int originX, int originY,
+        IReadOnlyList<Stroke> strokes,
+        IReadOnlyList<ScreenObject>? screens = null,
+        IReadOnlyList<TextObject>? texts = null)
+    {
+        var region = new RectD(originX, originY, captured.PixelWidth, captured.PixelHeight);
+        List<Stroke>? hit = null;
+        foreach (var s in strokes)
+            if (s.Bounds.Intersects(region))
+                (hit ??= new List<Stroke>()).Add(s);
+        List<ScreenObject>? hitScreens = null;
+        if (screens is not null)
+            foreach (var s in screens)
+            {
+                var b = new RectD(s.X, s.Y, s.WidthPx, s.HeightPx);
+                if (b.Intersects(region))
+                    (hitScreens ??= new List<ScreenObject>()).Add(s);
+            }
+        List<TextObject>? hitTexts = null;
+        if (texts is not null)
+            foreach (var t in texts)
+                if (t.X < region.Right && t.Y < region.Bottom &&
+                    t.X + t.FontSizePx * Math.Max(1, t.Content.Length) >= region.X &&
+                    t.Y + t.FontSizePx >= region.Y)
+                    (hitTexts ??= new List<TextObject>()).Add(t);
+        if (hit is null && hitScreens is null && hitTexts is null) return captured;
+
+        var root = new System.Windows.Media.DrawingVisual();
+        using (var dc = root.RenderOpen())
+        {
+            dc.DrawImage(captured, new Rect(0, 0, captured.PixelWidth, captured.PixelHeight));
+            if (hitScreens is not null)
+                foreach (var s in hitScreens)
+                    dc.DrawImage(ToBitmapSource(s.Bgra, s.PixelWidth, s.PixelHeight),
+                        new Rect(s.X - originX, s.Y - originY, s.WidthPx, s.HeightPx));
+            if (hit is not null)
+                foreach (var s in hit)
+                {
+                    var local = new List<Pt>(s.Points.Count);
+                    foreach (var p in s.Points)
+                        local.Add(new Pt(p.X - originX, p.Y - originY));
+                    WpfStrokeRenderer.RenderStrokeInto(dc, local, s.Color, s.WidthPx, s.Tool, s.Opacity);
+                }
+            if (hitTexts is not null)
+                foreach (var t in hitTexts)
+                    dc.DrawText(
+                        WpfStrokeRenderer.BuildFormattedText(t.Content, t.FontFamily,
+                            t.FontSizePx, t.Color, 1.0),
+                        new Point(t.X - originX, t.Y - originY));
+        }
+        var rtb = new RenderTargetBitmap(captured.PixelWidth, captured.PixelHeight,
+            96, 96, System.Windows.Media.PixelFormats.Pbgra32);
+        rtb.Render(root);
+        rtb.Freeze();
+        return rtb;
+    }
 
     // Clipboard do Windows (STA — chamado na thread da UI): a imagem fica
     // disponível p/ Ctrl+V no Paint/Word/Discord. Não toca na seleção.

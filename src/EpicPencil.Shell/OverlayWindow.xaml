@@ -12,6 +12,14 @@
              para o compositor. Sem isso, canvas vazio nunca recebe cliques. -->
         <Border Background="#01000000"/>
         <local:InkSurface x:Name="Surface"/>
+        <!-- Editor de texto (ferramenta Texto): visível só durante a edição.
+             Posicionado via Margin em DIPs locais; fonte/cor/tamanho vêm do
+             AppState ao abrir. Some sem deixar rastro (o texto vira DrawingVisual). -->
+        <TextBox x:Name="TextEditor" Visibility="Collapsed"
+                 HorizontalAlignment="Left" VerticalAlignment="Top"
+                 MinWidth="40" MaxLength="1000" AcceptsReturn="False"
+                 Background="#B0000000" BorderBrush="#66FFFFFF" BorderThickness="1"
+                 Padding="2,0" CaretBrush="White"/>
         <!-- Badge de modo: prova visual de que o overlay existe + modo atual.
              Verde = desenho, vermelho = interagir. Requisito F-12 (indicador). -->
         <Ellipse x:Name="ModeBadge" Width="14" Height="14"

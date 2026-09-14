@@ -12,5 +12,6 @@ public enum ToolKind
     Line,
     Arrow,
     EraserStroke,
-    Select // seleção de região (captura) + mover captura; não produz stroke
+    Select, // seleção de região (captura) + mover captura; não produz stroke
+    Text // texto: clique abre edição; commit cria TextObject (não produz stroke)
 }

@@ -39,6 +39,7 @@ internal static class ShellSelfTest
         RunRebuild(Check);
         RunToolbarUI(Check);
         RunExportHotkeys(Check);
+        RunText(Check);
         Console.WriteLine(failures.Count == 0 ? "SHELL SELFTEST OK" : $"FALHOU: {failures.Count}");
         return failures.Count == 0 ? 0 : 1;
     }
@@ -426,6 +427,8 @@ internal static class ShellSelfTest
         Check(HotkeyRouter.Resolve(Key.C, ModifierKeys.Shift) == HotkeyAction.None, "Shift+C não limpa");
         Check(HotkeyRouter.Resolve(Key.S, ModifierKeys.Alt) == HotkeyAction.None, "Alt+S não troca ferramenta");
         Check(HotkeyRouter.Resolve(Key.H, ModifierKeys.None) == HotkeyAction.ToolHighlighter, "H isolado → Highlighter");
+        Check(HotkeyRouter.Resolve(Key.T, ModifierKeys.None) == HotkeyAction.ToolText, "T isolado → Text");
+        Check(HotkeyRouter.Resolve(Key.T, ModifierKeys.Control) == HotkeyAction.None, "Ctrl+T não troca ferramenta");
 
         // REQ4: "seleção atual" = ScreenObject com Id == SelectedScreenId.
         var state = new AppState();
@@ -458,6 +461,141 @@ internal static class ShellSelfTest
         var png = CaptureExport.EncodePng(bmp);
         byte[] sig = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
         Check(png.Length > 8 && png.Take(8).SequenceEqual(sig), $"PNG válido ({png.Length} bytes, assinatura OK)");
+
+        // Composição: tinta do modelo sobre o bitmap capturado, sem chrome.
+        // Base branca 100x100; traço preto horizontal no meio (largura 6).
+        var white = new byte[4 * 100 * 100];
+        for (int i = 0; i < white.Length; i++) white[i] = 255;
+        var baseBmp = CaptureExport.ToBitmapSource(white, 100, 100);
+        var ink = new AppState();
+        ink.ActiveColor = new Rgba(0, 0, 0);
+        ink.AddFreehand(new List<Pt> { new(10, 50), new(90, 50) }, 6f);
+        var comp = CaptureExport.CompositeModel(baseBmp, 0, 0, ink.Strokes);
+        Check(comp.PixelWidth == 100 && comp.PixelHeight == 100, "composto preserva dimensões");
+        var px = new byte[4 * 100 * 100];
+        comp.CopyPixels(new Int32Rect(0, 0, 100, 100), px, 400, 0);
+        static (byte R, byte G, byte B) At(byte[] p, int x, int y) =>
+            (p[4 * (y * 100 + x) + 2], p[4 * (y * 100 + x) + 1], p[4 * (y * 100 + x)]);
+        var mid = At(px, 50, 50);
+        Check(mid.R < 100 && mid.G < 100 && mid.B < 100,
+            $"tinta aparece no composto (pixel central #{mid.R:X2}{mid.G:X2}{mid.B:X2})");
+        var corner = At(px, 5, 5);
+        Check(corner.R > 200 && corner.G > 200 && corner.B > 200, "fundo fora do traço intacto");
+        bool anyPureRed = false;
+        for (int i = 0; i < px.Length; i += 4)
+            if (px[i] == 0 && px[i + 1] == 0 && px[i + 2] == 255) { anyPureRed = true; break; }
+        Check(!anyPureRed, "sem vermelho de marquee no composto");
+
+        // Mapeamento com origem deslocada: stroke global (110..190,150),
+        // origem do BitBlt (100,100) → local (10..90,50).
+        var ink2 = new AppState();
+        ink2.ActiveColor = new Rgba(0, 0, 0);
+        ink2.AddFreehand(new List<Pt> { new(110, 150), new(190, 150) }, 6f);
+        var comp2 = CaptureExport.CompositeModel(baseBmp, 100, 100, ink2.Strokes);
+        var px2 = new byte[4 * 100 * 100];
+        comp2.CopyPixels(new Int32Rect(0, 0, 100, 100), px2, 400, 0);
+        var mid2 = At(px2, 50, 50);
+        Check(mid2.R < 100, "stroke global mapeado p/ coords locais da região");
+
+        // Fast path: stroke longe da região → retorna a base intacta.
+        var ink3 = new AppState();
+        ink3.AddFreehand(new List<Pt> { new(500, 500), new(600, 600) }, 4f);
+        Check(ReferenceEquals(CaptureExport.CompositeModel(baseBmp, 0, 0, ink3.Strokes), baseBmp),
+            "sem interseção: sem custo de composição");
+
+        // SnapToPixels: mesma origem que o flow usa no BitBlt.
+        var (sl, st2, sw, sh) = CaptureExport.SnapToPixels(new RectD(100.4f, 99.6f, 200.2f, 150.7f));
+        Check(sl == 100 && st2 == 100 && sw == 200 && sh == 151, $"snap píxel ({sl},{st2} {sw}x{sh})");
+    }
+
+    private static void RunText(Action<bool, string> Check)
+    {
+        // Fonte embutida resolve Space Mono (não fallback silencioso).
+        bool hasSpaceMono = TextFonts.Family.FamilyNames.Values
+            .Any(n => n.Contains("Space Mono", StringComparison.OrdinalIgnoreCase));
+        Check(hasSpaceMono, $"Space Mono embutida resolve ({TextFonts.Family.Source})");
+
+        // Modelo: commit, vazio descartado, undo/redo, clear.
+        var state = new AppState();
+        Check(state.AddText("", 10, 10, 20f, TextFonts.PreferredFamily, new Rgba(0, 0, 0)) is null,
+            "texto vazio não cria objeto");
+        Check(state.AddText("   ", 10, 10, 20f, TextFonts.PreferredFamily, new Rgba(0, 0, 0)) is null,
+            "texto em branco não cria objeto");
+        Check(state.TextCount == 0 && !state.CanUndo, "vazio não polui o undo");
+        var t1 = state.AddText("Olá", 100, 200, 20f, TextFonts.PreferredFamily, new Rgba(255, 0, 0));
+        Check(t1 is not null && state.TextCount == 1, "commit cria TextObject");
+        Check(t1!.FontFamily == "Space Mono" && Math.Abs(t1.FontSizePx - 20f) < 0.01 &&
+            Math.Abs(t1.X - 100) < 0.01 && Math.Abs(t1.Y - 200) < 0.01,
+            "posição/tamanho/família preservados");
+        state.Undo();
+        Check(state.TextCount == 0, "Ctrl+Z remove o texto");
+        state.Redo();
+        Check(state.TextCount == 1, "Ctrl+Y restaura o texto");
+        state.Clear();
+        Check(state.TextCount == 0, "clear remove textos");
+        state.Undo();
+        Check(state.TextCount == 1, "undo do clear restaura texto");
+
+        // Sync visual: replay + incremental via eventos (sem rebuild).
+        var surfState = new AppState();
+        var surface = new InkSurface();
+        surface.Attach(surfState);
+        surface.Measure(new Size(1920, 1080));
+        surface.Arrange(new Rect(0, 0, 1920, 1080));
+        surfState.AddText("abc", 50, 60, 20f, TextFonts.PreferredFamily, new Rgba(0, 0, 0));
+        int v1 = ((ContainerVisual)VisualTreeHelper.GetChild(surface, 2)).Children.Count;
+        Check(v1 == 1, $"texto vira visual ({v1})");
+        surfState.Undo();
+        int v2 = ((ContainerVisual)VisualTreeHelper.GetChild(surface, 2)).Children.Count;
+        Check(v2 == 0, "undo remove o visual");
+
+        // Clique com ferramenta Texto: pede edição, sem stroke, sem capture.
+        surfState.SetTool(ToolKind.Text);
+        Pt? asked = null;
+        surface.TextEditRequested += p => asked = p;
+        surface.SimulateTextRequest(new Pt(50, 60));
+        Check(asked.HasValue && Math.Abs(asked.Value.X - 50) < 0.01, "clique Texto pede edição no ponto");
+        Check(surfState.StrokeCount == 0, "ferramenta Texto nunca cria stroke");
+        surfState.SetTool(ToolKind.Pen);
+        asked = null;
+        surface.SimulateTextRequest(new Pt(1, 1));
+        Check(!asked.HasValue, "sem ferramenta Texto: sem pedido de edição");
+
+        // Export oculta os overlays (BitBlt sem chrome, determinístico).
+        var layout = MonitorLayout.Enumerate();
+        var st2 = new AppState();
+        var overlays = layout.Select(m => new OverlayWindow(st2, m)).ToList();
+        var toolbar = new ToolbarWindow(st2, overlays, overlays[0]);
+        foreach (var o in overlays) o.Show();
+        toolbar.Owner = overlays[0];
+        toolbar.Show();
+        Check(overlays.All(o => o.IsVisible), "overlays visíveis antes da exportação");
+        toolbar.SetOverlaysVisible(false);
+        Check(overlays.All(o => !o.IsVisible), "export esconde overlays (sem chrome no BitBlt)");
+        toolbar.SetOverlaysVisible(true);
+        Check(overlays.All(o => o.IsVisible), "export restaura overlays");
+        Check(toolbar.FontSizeBox.Items.Count == 8, "8 tamanhos de fonte");
+        Check(toolbar.TextButton.ToolTip is string tt && tt.Contains("(T)"), "botão texto tem tooltip com atalho");
+        toolbar.SuppressCloseShutdown = true;
+        toolbar.Close();
+        foreach (var o in overlays) { o.SuppressCloseShutdown = true; o.Close(); }
+
+        // Texto no composto: pixels de tinta na região do texto.
+        var white = new byte[4 * 100 * 100];
+        for (int i = 0; i < white.Length; i++) white[i] = 255;
+        var baseBmp = CaptureExport.ToBitmapSource(white, 100, 100);
+        var txt = new TextObject(1, 10, 10, "Hi", 20f, "Space Mono", new Rgba(0, 0, 0));
+        var comp = CaptureExport.CompositeModel(baseBmp, 0, 0, [], null, [txt]);
+        var px = new byte[4 * 100 * 100];
+        comp.CopyPixels(new Int32Rect(0, 0, 100, 100), px, 400, 0);
+        bool inkFound = false;
+        for (int y = 0; y < 40 && !inkFound; y++)
+            for (int x = 0; x < 60; x++)
+            {
+                int o = 4 * (y * 100 + x);
+                if (px[o] < 200 || px[o + 1] < 200 || px[o + 2] < 200) { inkFound = true; break; }
+            }
+        Check(inkFound, "texto composto renderiza tinta");
     }
 
     // Bombeia a fila do dispatcher por ms reais (timers de UI disparam).

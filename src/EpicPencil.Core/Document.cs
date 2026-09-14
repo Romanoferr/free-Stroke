@@ -14,13 +14,16 @@ public sealed class Document
 {
     private readonly List<Stroke> _strokes = new();
     private readonly List<ScreenObject> _screens = new();
+    private readonly List<TextObject> _texts = new();
     private int _nextId = 1;
 
     public IReadOnlyList<Stroke> Strokes => _strokes;
     public IReadOnlyList<ScreenObject> Screens => _screens;
+    public IReadOnlyList<TextObject> Texts => _texts;
     public Camera Camera { get; private set; } = Camera.Identity;
     public int Count => _strokes.Count;
     public int ScreenCount => _screens.Count;
+    public int TextCount => _texts.Count;
 
     public int NextId() => _nextId++;
 
@@ -32,6 +35,10 @@ public sealed class Document
     internal void AddScreen(ScreenObject screen) => _screens.Add(screen);
     internal void InsertScreen(ScreenObject screen, int index) => _screens.Insert(index, screen);
     internal bool RemoveScreen(ScreenObject screen) => _screens.Remove(screen);
+
+    internal void AddText(TextObject text) => _texts.Add(text);
+    internal void InsertText(TextObject text, int index) => _texts.Insert(index, text);
+    internal bool RemoveText(TextObject text) => _texts.Remove(text);
 
     public ScreenObject? FindScreen(int id)
     {
