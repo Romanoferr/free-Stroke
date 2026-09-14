@@ -14,10 +14,15 @@ namespace EpicPencil.Shell;
 public partial class ToolbarWindow : Window
 {
     // Paleta fixa do MVP: cobre fundo claro e escuro sem picker custom.
-    private static readonly Rgba[] Palette =
+    // Nome humano no tooltip (hex é para devs).
+    private static readonly (Rgba Color, string Name)[] Palette =
     {
-        new(0, 0, 0), new(255, 255, 255), new(255, 0, 0),
-        new(0, 120, 215), new(0, 180, 0), new(255, 235, 59),
+        (new(0, 0, 0), "Preto"),
+        (new(255, 255, 255), "Branco"),
+        (new(255, 0, 0), "Vermelho"),
+        (new(0, 120, 215), "Azul"),
+        (new(0, 180, 0), "Verde"),
+        (new(255, 235, 59), "Amarelo"),
     };
 
     private readonly AppState _state;
@@ -26,9 +31,20 @@ public partial class ToolbarWindow : Window
     private readonly List<Button> _swatches = new();
 
     // Selected visual (aplicado em código; hover/pressed vivem no XAML).
-    private static readonly SolidColorBrush SelBg = CreateFrozen(0x1F, 0x6F, 0xB2);
-    private static readonly SolidColorBrush SelBorder = CreateFrozen(0x6C, 0xB8, 0xF0);
+    // Cores vêm do Theme.xaml (mesclado nos recursos da janela) e são congeladas
+    // p/ render barato. Resolvidas por instância (self-test não carrega App.xaml).
+    private readonly SolidColorBrush _selBg;
+    private readonly SolidColorBrush _selBorder;
+    private readonly SolidColorBrush _modeDrawBrush;
+    private readonly SolidColorBrush _modeInteractBrush;
+    private readonly SolidColorBrush _textSecondaryFrozen;
     private readonly SolidColorBrush _collapsedColorBrush = new(Color.FromRgb(255, 0, 0));
+
+    private SolidColorBrush FrozenFromTheme(string key)
+    {
+        if (TryFindResource(key) is not SolidColorBrush src) throw new InvalidOperationException($"Theme token ausente: {key}");
+        return (SolidColorBrush)src.GetAsFrozen();
+    }
 
     private static readonly Dictionary<ToolKind, string> ShortToolName = new()
     {
@@ -37,6 +53,8 @@ public partial class ToolbarWindow : Window
         [ToolKind.Highlighter] = "Marca",
         [ToolKind.Line] = "Linha",
         [ToolKind.Arrow] = "Seta",
+        [ToolKind.Rectangle] = "Retângulo",
+        [ToolKind.Circle] = "Círculo",
         [ToolKind.Select] = "Seleção",
         [ToolKind.EraserStroke] = "Borracha",
         [ToolKind.Text] = "Texto",
@@ -46,6 +64,7 @@ public partial class ToolbarWindow : Window
     private bool _collapsed;
     private bool _animating;
     private bool _syncingSlider; // RefreshStatus → slider sem reentrância
+    private bool _syncingFont; // RefreshStatus → combo sem reentrância
     private double _expandedW = 380;
     private double _expandedH = 320;
     private System.Windows.Threading.DispatcherTimer? _animTimer;
@@ -62,6 +81,11 @@ public partial class ToolbarWindow : Window
     public ToolbarWindow(AppState state, IReadOnlyList<OverlayWindow> overlays, OverlayWindow primary)
     {
         InitializeComponent();
+        _selBg = FrozenFromTheme("AccentBgBrush");
+        _selBorder = FrozenFromTheme("AccentBrush");
+        _modeDrawBrush = FrozenFromTheme("ModeDrawBrush");
+        _modeInteractBrush = FrozenFromTheme("ModeInteractBrush");
+        _textSecondaryFrozen = FrozenFromTheme("TextSecondaryBrush");
         _state = state;
         _overlays = overlays;
         _primary = primary;
@@ -72,12 +96,12 @@ public partial class ToolbarWindow : Window
             FontSizeBox.Items.Add(size.ToString());
         FontSizeBox.SelectedItem = ((int)_state.ActiveFontSizeDip).ToString();
         FontSizeBox.SelectionChanged += OnFontSizeChanged;
-        foreach (var color in Palette)
+        foreach (var (color, name) in Palette)
         {
             var swatch = new Button
             {
                 Style = (Style)FindResource("SwatchButton"),
-                ToolTip = $"Cor #{color.R:X2}{color.G:X2}{color.B:X2}",
+                ToolTip = name,
                 Tag = color,
                 Content = new System.Windows.Shapes.Ellipse
                 {
@@ -101,7 +125,6 @@ public partial class ToolbarWindow : Window
             Log.Info("toolbar fechada → shutdown completo");
             Application.Current.Shutdown();
         };
-        ToolTip = $"Log: {Log.Path}"; // onde debugar o que aconteceu
         HeaderGrip.PreviewMouseLeftButtonDown += (_, _) => TryDrag();
         CollapsedGrip.PreviewMouseLeftButtonDown += (_, _) => TryDrag();
         Loaded += (_, _) =>
@@ -130,6 +153,8 @@ public partial class ToolbarWindow : Window
     private void OnToolMarker(object sender, RoutedEventArgs e) => _state.SetTool(ToolKind.Highlighter);
     private void OnToolLine(object sender, RoutedEventArgs e) => _state.SetTool(ToolKind.Line);
     private void OnToolArrow(object sender, RoutedEventArgs e) => _state.SetTool(ToolKind.Arrow);
+    private void OnToolRectangle(object sender, RoutedEventArgs e) => _state.SetTool(ToolKind.Rectangle);
+    private void OnToolCircle(object sender, RoutedEventArgs e) => _state.SetTool(ToolKind.Circle);
     private void OnToolSelect(object sender, RoutedEventArgs e) => _state.SetTool(ToolKind.Select);
     private void OnToolText(object sender, RoutedEventArgs e) => ActivateTextTool();
     // Texto exige input do overlay: ao ativá-la garante modo desenho visível
@@ -140,7 +165,7 @@ public partial class ToolbarWindow : Window
         _state.SetInkVisible(true);
         _state.SetDrawMode(true);
     }
-    private void OnDeleteScreen(object sender, RoutedEventArgs e) => _state.DeleteSelectedScreen();
+    private void OnDeleteScreen(object sender, RoutedEventArgs e) => _state.DeleteSelectedObject();
     private void OnToolEraser(object sender, RoutedEventArgs e) => _state.SetTool(ToolKind.EraserStroke);
     private void OnThicknessChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
@@ -150,11 +175,32 @@ public partial class ToolbarWindow : Window
     }
     private void OnFontSizeChanged(object sender, SelectionChangedEventArgs e)
     {
+        if (_syncingFont) return;
         if (FontSizeBox.SelectedItem is string s && float.TryParse(s, out float size))
+        {
+            // Sempre define o padrão p/ novos textos; com texto selecionado,
+            // aplica nele também (um comando, um Ctrl+Z desfaz).
             _state.SetActiveFontSize(size);
+            if (_state.SelectedTextId is int tid)
+                ApplySelectedTextSize(tid, size);
+            RefreshStatus();
+        }
+    }
+
+    private void ApplySelectedTextSize(int id, float sizeDip)
+    {
+        var t = _state.Texts.FirstOrDefault(x => x.Id == id);
+        if (t is null) return;
+        float sizePx = sizeDip * _primary.SurfaceControl.Frame.PxPerDipX;
+        if (Math.Abs(t.FontSizePx - sizePx) < 0.01) return;
+        var (w, h) = TextMeasure.Measure(t.Content, t.FontFamily, sizePx);
+        _state.UpdateText(id, t.Content, sizePx, w, h);
     }
     private void OnUndo(object sender, RoutedEventArgs e) => _state.Undo();
     private void OnRedo(object sender, RoutedEventArgs e) => _state.Redo();
+    private void OnWidthPreset0(object sender, RoutedEventArgs e) => _state.SetActiveWidthPreset(0);
+    private void OnWidthPreset1(object sender, RoutedEventArgs e) => _state.SetActiveWidthPreset(1);
+    private void OnWidthPreset2(object sender, RoutedEventArgs e) => _state.SetActiveWidthPreset(2);
     private void OnClear(object sender, RoutedEventArgs e) => _state.Clear();
     // Mostrar/ocultar unificado: visível = modo desenho; oculto = interagir
     // (click-through). Substitui o antigo par Desenhar/Interagir + Esconder.
@@ -226,6 +272,8 @@ public partial class ToolbarWindow : Window
             case HotkeyAction.ToolHighlighter: _state.SetTool(ToolKind.Highlighter); break;
             case HotkeyAction.ToolLine: _state.SetTool(ToolKind.Line); break;
             case HotkeyAction.ToolArrow: _state.SetTool(ToolKind.Arrow); break;
+            case HotkeyAction.ToolRectangle: _state.SetTool(ToolKind.Rectangle); break;
+            case HotkeyAction.ToolCircle: _state.SetTool(ToolKind.Circle); break;
             case HotkeyAction.ToolSelect: _state.SetTool(ToolKind.Select); break;
             case HotkeyAction.ToolText: ActivateTextTool(); break;
             case HotkeyAction.ToolEraser: _state.SetTool(ToolKind.EraserStroke); break;
@@ -233,9 +281,12 @@ public partial class ToolbarWindow : Window
             case HotkeyAction.WidthPreset1: _state.SetActiveWidthPreset(1); break;
             case HotkeyAction.WidthPreset2: _state.SetActiveWidthPreset(2); break;
             case HotkeyAction.Clear: _state.Clear(); break;
-            case HotkeyAction.DeleteScreen: _state.DeleteSelectedScreen(); break;
+            case HotkeyAction.DeleteScreen: _state.DeleteSelectedObject(); break;
             case HotkeyAction.ToggleInkMode: ToggleInkMode(); break;
-            case HotkeyAction.HideInk: HideInk(); break;
+            case HotkeyAction.HideInk: // Escape: com seleção, só desseleciona (REQ2); sem seleção, oculta
+                if (_state.HasSelection) _state.ClearSelection();
+                else HideInk();
+                break;
             case HotkeyAction.Undo: _state.Undo(); break;
             case HotkeyAction.Redo: _state.Redo(); break;
             case HotkeyAction.CopyCapture: _ = CopyCaptureAsync(); break;
@@ -265,7 +316,8 @@ public partial class ToolbarWindow : Window
         var (l, t, _, _) = CaptureExport.SnapToPixels(region);
         var captured = CaptureExport.ToBitmapSource(img.Bgra, img.PixelWidth, img.PixelHeight);
         return CaptureExport.CompositeModel(captured, l, t,
-            _state.Strokes, _state.Screens, _state.Texts);
+            _state.Strokes, _state.Screens, _state.Texts,
+            _state.Rectangles, _state.Circles);
     }
 
     // Oculta/mostra os overlays p/ o BitBlt não carregar chrome (determinístico;
@@ -321,10 +373,11 @@ public partial class ToolbarWindow : Window
         MarkSelected(MarkerButton, _state.ActiveTool == ToolKind.Highlighter);
         MarkSelected(LineButton, _state.ActiveTool == ToolKind.Line);
         MarkSelected(ArrowButton, _state.ActiveTool == ToolKind.Arrow);
+        MarkSelected(RectangleButton, _state.ActiveTool == ToolKind.Rectangle);
+        MarkSelected(CircleButton, _state.ActiveTool == ToolKind.Circle);
         MarkSelected(SelectButton, _state.ActiveTool == ToolKind.Select);
         MarkSelected(EraserButton, _state.ActiveTool == ToolKind.EraserStroke);
         MarkSelected(TextButton, _state.ActiveTool == ToolKind.Text);
-        MarkSelected(HideButton, _state.InkVisible);
         var c = _state.ActiveColor;
         foreach (var sw in _swatches)
             if (sw.Tag is Rgba rc)
@@ -335,18 +388,55 @@ public partial class ToolbarWindow : Window
         _syncingSlider = true;
         try
         {
-            // Slider 1–10; presets maiores (ex. marker 18) pinam no máximo até ajuste.
-            ThicknessSlider.Value = Math.Clamp(_state.ActiveWidth, 1f, 10f);
+            // Slider 1–64 (range real do modelo; presets maiores, ex. marker 18, cabem).
+            ThicknessSlider.Value = Math.Clamp(_state.ActiveWidth, 1f, 64f);
             ThicknessValue.Text = $"{_state.ActiveWidth:F0}";
         }
         finally { _syncingSlider = false; }
-        var modeBrush = _state.IsDrawMode ? Brushes.LimeGreen : Brushes.OrangeRed;
-        HeaderModeDot.Fill = modeBrush;
+        // Preset S/M/G ativo: realce quando a espessura atual == preset canônico.
+        MarkPreset(WidthPreset0Button, StrokeSpec.WidthPreset(_state.ActiveTool, 0));
+        MarkPreset(WidthPreset1Button, StrokeSpec.WidthPreset(_state.ActiveTool, 1));
+        MarkPreset(WidthPreset2Button, StrokeSpec.WidthPreset(_state.ActiveTool, 2));
+        // Estados disabled: indisponível não pode parecer clicável (nem sumir).
+        UndoButton.IsEnabled = _state.CanUndo;
+        RedoButton.IsEnabled = _state.CanRedo;
+        DeleteObjectButton.IsEnabled = _state.HasSelection;
+        _syncingFont = true;
+        try
+        {
+            // Combo mostra o tamanho do texto selecionado (p/ aplicar nele) ou
+            // o padrão p/ novos textos. Só valores da lista (sempre válidos).
+            string want = ((int)_state.ActiveFontSizeDip).ToString();
+            if (_state.SelectedTextId is int tid
+                && _state.Texts.FirstOrDefault(t => t.Id == tid) is { } tt)
+            {
+                float dip = tt.FontSizePx / _primary.SurfaceControl.Frame.PxPerDipX;
+                string have = ((int)Math.Round(dip)).ToString();
+                if (FontSizeBox.Items.Contains(have)) want = have;
+            }
+            if (!Equals(FontSizeBox.SelectedItem, want)) FontSizeBox.SelectedItem = want;
+        }
+        finally { _syncingFont = false; }
+        // Contextual: controle de fonte só quando faz sentido (ferramenta Texto
+        // ou texto selecionado p/ redimensionar). Não ocupa espaço permanente.
+        bool fontRelevant = _state.ActiveTool == ToolKind.Text || _state.SelectedTextId is not null;
+        FontSlot.Visibility = fontRelevant ? Visibility.Visible : Visibility.Collapsed;
+        // Modo: cor + forma no olho (toggle) e no dot da barra recolhida —
+        // nunca só cor (acessibilidade). Olho aberto = tinta visível/desenho.
+        var modeBrush = _state.IsDrawMode ? _modeDrawBrush : _modeInteractBrush;
         CollapsedModeDot.Fill = modeBrush;
         string modeTip = _state.IsDrawMode ? "Modo desenho (clique e arraste para riscar)"
             : "Modo interagir (cliques atravessam — volte pela toolbar)";
-        HeaderModeDot.ToolTip = modeTip;
         CollapsedModeDot.ToolTip = modeTip;
+        bool ink = _state.InkVisible;
+        EyeOpenPath.Visibility = ink ? Visibility.Visible : Visibility.Collapsed;
+        EyePupil.Visibility = ink ? Visibility.Visible : Visibility.Collapsed;
+        EyeClosedPath.Visibility = ink ? Visibility.Collapsed : Visibility.Visible;
+        HideButton.Background = ink ? Brushes.Transparent : _selBg;
+        HideButton.BorderBrush = ink ? Brushes.Transparent : _selBorder;
+        HideButton.ToolTip = ink
+            ? "Ocultar desenho e interagir com o que está abaixo (F9)"
+            : "Mostrar desenho (F9)";
         CollapsedColorDot.Fill = _collapsedColorBrush;
         _collapsedColorBrush.Color = Color.FromRgb(c.R, c.G, c.B);
         CollapsedToolText.Text = ShortToolName.TryGetValue(_state.ActiveTool, out var name) ? name : "?";
@@ -354,21 +444,23 @@ public partial class ToolbarWindow : Window
             $"tool={_state.ActiveTool} cor=#{c.R:X2}{c.G:X2}{c.B:X2} w={_state.ActiveWidth:F1} " +
             $"strokes={_state.StrokeCount} pts={_state.PointCount} " +
             $"caps={_state.ScreenCount} sel={_state.SelectedScreenId?.ToString() ?? "-"} " +
-            $"txt={_state.TextCount} f={_state.ActiveFontSizeDip:F0} " +
+            $"txt={_state.TextCount} ret={_state.RectangleCount} circ={_state.CircleCount} " +
+            $"f={_state.ActiveFontSizeDip:F0} " +
             $"p50={_primary.SurfaceControl.ProcessingP50Ms:F2}ms";
     }
 
-    private static void MarkSelected(Button b, bool selected)
+    private void MarkSelected(Button b, bool selected)
     {
-        b.Background = selected ? SelBg : Brushes.Transparent;
-        b.BorderBrush = selected ? SelBorder : Brushes.Transparent;
+        b.Background = selected ? _selBg : Brushes.Transparent;
+        b.BorderBrush = selected ? _selBorder : Brushes.Transparent;
     }
 
-    private static SolidColorBrush CreateFrozen(byte r, byte g, byte b)
+    private void MarkPreset(Button b, float canonicalWidth)
     {
-        var brush = new SolidColorBrush(Color.FromRgb(r, g, b));
-        brush.Freeze();
-        return brush;
+        bool active = Math.Abs(_state.ActiveWidth - canonicalWidth) < 0.01f;
+        b.Background = active ? _selBg : Brushes.Transparent;
+        b.BorderBrush = active ? _selBorder : Brushes.Transparent;
+        b.Foreground = active ? _selBorder : _textSecondaryFrozen;
     }
 
     private void TryDrag()

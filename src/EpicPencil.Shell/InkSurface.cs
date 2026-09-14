@@ -29,10 +29,13 @@ public sealed class InkSurface : FrameworkElement
     private readonly ContainerVisual _finalized = new();
     private readonly DrawingVisual _active = new();
     private readonly DrawingVisual _selection = new();
+    private readonly DrawingVisual _cursorRing = new(); // F-14: ferramenta+espessura+cor no ponteiro
     private readonly Dictionary<int, DrawingVisual> _screenVisuals = new();
     private readonly Dictionary<int, ImageSource> _screenImages = new();
     private readonly Dictionary<int, DrawingVisual> _map = new();
     private readonly Dictionary<int, DrawingVisual> _textVisuals = new();
+    private readonly Dictionary<int, DrawingVisual> _rectVisuals = new();
+    private readonly Dictionary<int, DrawingVisual> _circleVisuals = new();
     private readonly double[] _samples = new double[128];
     private int _sampleCount;
 
@@ -46,6 +49,16 @@ public sealed class InkSurface : FrameworkElement
     private double _lastStylusMs = double.NaN;
     private DateTime _lastSlowWarn = DateTime.MinValue;
 
+    // Anel do cursor (F-14): última posição conhecida p/ re-render em mudança
+    // de estado; pens congelados cacheados por (cor, espessura) — zero alloc
+    // por mouse-move no caminho estável.
+    private Pt? _lastRingPos;
+    private Pen? _ringPen;
+    private Pen? _ringHaloPen;
+    private Brush? _ringDotBrush;
+    private Rgba _ringColorKey;
+    private float _ringWidthKey = float.NaN;
+
     // Select (REQ1): marquee cria captura; arrasto sobre captura existente move.
     private bool _marqueeing;
     private Pt _marqueeAnchor;
@@ -54,6 +67,20 @@ public sealed class InkSurface : FrameworkElement
     private Pt _moveCurrent;
     private bool _capturing;
 
+    // Texto como objeto: _movingText espelha _movingScreen (visual ao vivo,
+    // modelo só no Up via MoveTextCommand). _lastTextTap detecta duplo-toque
+    // (mouse e stylus pelo mesmo relógio — sem ClickCount).
+    private TextObject? _movingText;
+    private Pt _moveTextGrabOffset;
+    private Pt _moveTextCurrent;
+    private (int Id, DateTime At, Pt Pos) _lastTextTap;
+
+    // Formas (genérico REQ8): um slot p/ Rectangle e Circle (IMovableShape).
+    // Visual ao vivo via Offset; modelo commita no Up via MoveShapeCommand.
+    private IMovableShape? _movingShape;
+    private Pt _moveShapeGrabOffset;
+    private Pt _moveShapeCurrent;
+
     // Texto: a OverlayWindow dona do TextBox coordena via estes membros.
     // IsEditingText = caixa aberta; CommitEditRequested = fecha e commita
     // (chamado no início de cada novo gesto — clique fora finaliza a edição).
@@ -61,6 +88,9 @@ public sealed class InkSurface : FrameworkElement
     public bool IsEditingText { get; set; }
     public Action? CommitEditRequested { get; set; }
     public event Action<Pt>? TextEditRequested;
+    // Reedição de texto existente (duplo-toque com Select): a OverlayWindow
+    // abre a caixa pré-preenchida; o commit atualiza o mesmo objeto.
+    public event Action<TextObject>? TextReeditRequested;
 
     // Frame de coordenadas deste overlay: input local (DIP) → global (px da
     // tela virtual) na entrada; global → local na renderização. Documento
@@ -79,17 +109,19 @@ public sealed class InkSurface : FrameworkElement
         AddVisualChild(_finalized);
         AddVisualChild(_active);
         AddVisualChild(_selection);
+        AddVisualChild(_cursorRing);
         Focusable = false;
     }
 
-    protected override int VisualChildrenCount => 5;
+    protected override int VisualChildrenCount => 6;
     protected override Visual GetVisualChild(int index) => index switch
     {
         0 => _hit,
         1 => _screens,
         2 => _finalized,
         3 => _active,
-        _ => _selection,
+        4 => _selection,
+        _ => _cursorRing,
     };
 
     protected override void OnRenderSizeChanged(SizeChangedInfo sizeInfo)
@@ -136,10 +168,20 @@ public sealed class InkSurface : FrameworkElement
         state.ScreenMoved += OnScreenMoved;
         state.TextAdded += OnTextAdded;
         state.TextsRemoved += OnTextsRemoved;
+        state.TextMoved += RefreshTextVisual;
+        state.TextChanged += RefreshTextVisual;
+        state.RectangleAdded += OnRectangleAdded;
+        state.RectanglesRemoved += OnRectanglesRemoved;
+        state.RectangleMoved += RefreshRectangleVisual;
+        state.CircleAdded += OnCircleAdded;
+        state.CirclesRemoved += OnCirclesRemoved;
+        state.CircleMoved += RefreshCircleVisual;
         state.StateChanged += RefreshSelection;
         foreach (var s in state.Strokes) OnStrokeAdded(s);
         foreach (var screen in state.Screens) OnScreenAdded(screen);
         foreach (var t in state.Texts) OnTextAdded(t);
+        foreach (var r in state.Rectangles) OnRectangleAdded(r);
+        foreach (var c in state.Circles) OnCircleAdded(c);
         RefreshSelection();
     }
 
@@ -150,6 +192,8 @@ public sealed class InkSurface : FrameworkElement
         _finalized.Children.Clear();
         _map.Clear();
         _textVisuals.Clear();
+        _rectVisuals.Clear();
+        _circleVisuals.Clear();
         _screens.Children.Clear();
         _screenVisuals.Clear();
         _screenImages.Clear();
@@ -169,6 +213,14 @@ public sealed class InkSurface : FrameworkElement
         _attached.ScreenMoved -= OnScreenMoved;
         _attached.TextAdded -= OnTextAdded;
         _attached.TextsRemoved -= OnTextsRemoved;
+        _attached.TextMoved -= RefreshTextVisual;
+        _attached.TextChanged -= RefreshTextVisual;
+        _attached.RectangleAdded -= OnRectangleAdded;
+        _attached.RectanglesRemoved -= OnRectanglesRemoved;
+        _attached.RectangleMoved -= RefreshRectangleVisual;
+        _attached.CircleAdded -= OnCircleAdded;
+        _attached.CirclesRemoved -= OnCirclesRemoved;
+        _attached.CircleMoved -= RefreshCircleVisual;
         _attached.StateChanged -= RefreshSelection;
         _attached = null;
         _state = null;
@@ -243,6 +295,79 @@ public sealed class InkSurface : FrameworkElement
                 _finalized.Children.Remove(visual);
     }
 
+    // Move/reedição: reconstrói o visual no estado atual do modelo (posição,
+    // conteúdo ou tamanho novos; Offset do arrasto zerado junto).
+    private void RefreshTextVisual(TextObject text)
+    {
+        if (_textVisuals.Remove(text.Id, out var old))
+            _finalized.Children.Remove(old);
+        OnTextAdded(text);
+    }
+
+    private void OnRectangleAdded(RectangleObject rect)
+    {
+        // Forma em px globais → visual local (geometria em 0,0 + Offset).
+        var local = Frame.ToLocal(rect.Bounds);
+        var visual = WpfStrokeRenderer.BuildRectangleVisual(local, rect.Color,
+            rect.StrokeWidthPx / Frame.PxPerDipX);
+        _finalized.Children.Add(visual);
+        _rectVisuals[rect.Id] = visual;
+        ClearPreview();
+    }
+
+    private void OnRectanglesRemoved(IReadOnlyList<RectangleObject> list)
+    {
+        foreach (var r in list)
+            if (_rectVisuals.Remove(r.Id, out var visual))
+                _finalized.Children.Remove(visual);
+        ClearPreview();
+    }
+
+    // Move: reconstrói no estado atual do modelo (Offset do arrasto zerado).
+    private void RefreshRectangleVisual(RectangleObject rect)
+    {
+        if (_rectVisuals.Remove(rect.Id, out var old))
+            _finalized.Children.Remove(old);
+        // Rebuild sem limpar o preview do gesto vizinho: OnRectangleAdded
+        // limpa o preview (fim do ciclo de move/commit).
+        var local = Frame.ToLocal(rect.Bounds);
+        var visual = WpfStrokeRenderer.BuildRectangleVisual(local, rect.Color,
+            rect.StrokeWidthPx / Frame.PxPerDipX);
+        _finalized.Children.Add(visual);
+        _rectVisuals[rect.Id] = visual;
+        ClearPreview();
+    }
+
+    private void OnCircleAdded(CircleObject circle)
+    {
+        var local = Frame.ToLocal(circle.Bounds);
+        var visual = WpfStrokeRenderer.BuildCircleVisual(local, circle.Color,
+            circle.StrokeWidthPx / Frame.PxPerDipX);
+        _finalized.Children.Add(visual);
+        _circleVisuals[circle.Id] = visual;
+        ClearPreview();
+    }
+
+    private void OnCirclesRemoved(IReadOnlyList<CircleObject> list)
+    {
+        foreach (var c in list)
+            if (_circleVisuals.Remove(c.Id, out var visual))
+                _finalized.Children.Remove(visual);
+        ClearPreview();
+    }
+
+    private void RefreshCircleVisual(CircleObject circle)
+    {
+        if (_circleVisuals.Remove(circle.Id, out var old))
+            _finalized.Children.Remove(old);
+        var local = Frame.ToLocal(circle.Bounds);
+        var visual = WpfStrokeRenderer.BuildCircleVisual(local, circle.Color,
+            circle.StrokeWidthPx / Frame.PxPerDipX);
+        _finalized.Children.Add(visual);
+        _circleVisuals[circle.Id] = visual;
+        ClearPreview();
+    }
+
     // Caminho de teste headless: mesmo commit do gesto real, sem HWND/eventos.
     // Pontos em coords LOCAIS (como o gesto); commit converte p/ global.
     // Com Frame identidade (default), local == global (testes atuais intactos).
@@ -262,6 +387,12 @@ public sealed class InkSurface : FrameworkElement
     public void SimulateShape(ToolKind tool, Pt a, Pt b)
     {
         if (_state is null) return;
+        if (tool is ToolKind.Rectangle or ToolKind.Circle)
+        {
+            PreviewShape(tool, a, b);
+            CommitShape(tool, Frame.ToGlobal(a), Frame.ToGlobal(b));
+            return;
+        }
         PreviewShape(tool, a, b);
         _state.AddShape(tool, Frame.ToGlobal(a), Frame.ToGlobal(b),
             _state.Presets[tool].WidthDip * Frame.PxPerDipX);
@@ -299,8 +430,10 @@ public sealed class InkSurface : FrameworkElement
         _lastStylusMs = InputDedup.NowMs();
         try
         {
+            var p = ToPt(e.GetPosition(this));
+            UpdateCursorRing(p);
             if (_state is null) return;
-            MoveAt(ToPt(e.GetPosition(this)));
+            MoveAt(p);
         }
         catch (Exception ex) { Log.Error("falha durante o traço", ex); }
         e.Handled = true;
@@ -334,13 +467,28 @@ public sealed class InkSurface : FrameworkElement
         base.OnMouseMove(e);
         try
         {
+            var p = ToPt(e.GetPosition(this));
+            UpdateCursorRing(p); // hover: anel segue o mouse mesmo sem gesto
             if (_state is null) return;
             if (e.LeftButton != MouseButtonState.Pressed) return;
             if (!InputDedup.ShouldAcceptMouse(_lastStylusMs, InputDedup.NowMs())) return; // promoção
-            MoveAt(ToPt(e.GetPosition(this)));
+            MoveAt(p);
         }
         catch (Exception ex) { Log.Error("falha durante o traço (mouse)", ex); }
         e.Handled = true;
+    }
+
+    protected override void OnMouseEnter(MouseEventArgs e)
+    {
+        base.OnMouseEnter(e);
+        UpdateCursorRing(ToPt(e.GetPosition(this)));
+    }
+
+    protected override void OnMouseLeave(MouseEventArgs e)
+    {
+        base.OnMouseLeave(e);
+        _lastRingPos = null;
+        using (_cursorRing.RenderOpen()) { } // sem seleção de posição: anel vazio
     }
 
     protected override void OnMouseLeftButtonUp(MouseButtonEventArgs e)
@@ -376,22 +524,7 @@ public sealed class InkSurface : FrameworkElement
         if (_state.ActiveTool == ToolKind.Select)
         {
             if (_capturing) return; // captura em voo: gesto ignorado (sem deadlock)
-            var hit = PickScreen(g);
-            if (hit is not null)
-            {
-                _movingScreen = hit;
-                _moveGrabOffset = new Pt(g.X - hit.X, g.Y - hit.Y);
-                _moveCurrent = new Pt(hit.X, hit.Y);
-                _state.SelectScreen(hit.Id);
-                capture();
-            }
-            else
-            {
-                _marqueeing = true;
-                _marqueeAnchor = p;
-                _state.SelectScreen(null);
-                capture();
-            }
+            HandleSelectTap(p, capture);
             return;
         }
         if (_state.ActiveTool == ToolKind.EraserStroke)
@@ -400,7 +533,8 @@ public sealed class InkSurface : FrameworkElement
             _lastErase = g;
             _state.EraseSegment(g, g);
         }
-        else if (_state.ActiveTool is ToolKind.Line or ToolKind.Arrow)
+        else if (_state.ActiveTool is ToolKind.Line or ToolKind.Arrow
+            or ToolKind.Rectangle or ToolKind.Circle)
         {
             _shaping = true;
             _anchor = p;
@@ -414,10 +548,135 @@ public sealed class InkSurface : FrameworkElement
         }
     }
 
+    // Toque com Select: UM hit-test centralizado (ObjectPicker: _finalized por
+    // Id — textos/retângulos/círculos — acima das capturas). Objeto → seleciona
+    // e prepara move; vazio → desseleciona e inicia marquee de REGIÃO (nunca
+    // confunde região com objeto — REQ7). Nunca cria stroke (REQ8).
+    private string HandleSelectTap(Pt p, Action capture)
+    {
+        if (_state is null) return "ignored";
+        Pt g = Frame.ToGlobal(p);
+        var pick = ObjectPicker.PickTopmost(
+            _state.Texts, _state.Rectangles, _state.Circles, _state.Screens, g);
+        if (pick is { Kind: CanvasObjectKind.Text } textPick
+            && _state.Texts.FirstOrDefault(t => t.Id == textPick.Id) is { } hitText)
+        {
+            // Duplo-toque no mesmo texto (<500 ms, <8 px): reeditar em vez de
+            // mover. Vale p/ mouse, caneta e touch (mesmo relógio).
+            var now = DateTime.UtcNow;
+            if (_lastTextTap.Id == hitText.Id &&
+                (now - _lastTextTap.At).TotalMilliseconds < 500 &&
+                _lastTextTap.Pos.DistanceTo(g) < 8)
+            {
+                _lastTextTap = default;
+                TextReeditRequested?.Invoke(hitText);
+                return "reedit";
+            }
+            _lastTextTap = (hitText.Id, now, g);
+            _movingText = hitText;
+            _moveTextGrabOffset = new Pt(g.X - hitText.X, g.Y - hitText.Y);
+            _moveTextCurrent = new Pt(hitText.X, hitText.Y);
+            _state.SelectObject(pick);
+            capture();
+            return "text";
+        }
+        _lastTextTap = default;
+        if (pick is { Kind: CanvasObjectKind.Rectangle } rectPick
+            && _state.Rectangles.FirstOrDefault(r => r.Id == rectPick.Id) is { } hitRect)
+        {
+            BeginMoveShape(hitRect, g, pick.Value, capture);
+            return "rectangle";
+        }
+        if (pick is { Kind: CanvasObjectKind.Circle } circlePick
+            && _state.Circles.FirstOrDefault(c => c.Id == circlePick.Id) is { } hitCircle)
+        {
+            BeginMoveShape(hitCircle, g, pick.Value, capture);
+            return "circle";
+        }
+        if (pick is { Kind: CanvasObjectKind.Screen } screenPick
+            && _state.Screens.FirstOrDefault(s => s.Id == screenPick.Id) is { } hit)
+        {
+            _movingScreen = hit;
+            _moveGrabOffset = new Pt(g.X - hit.X, g.Y - hit.Y);
+            _moveCurrent = new Pt(hit.X, hit.Y);
+            _state.SelectObject(pick);
+            capture();
+            return "screen";
+        }
+        _marqueeing = true;
+        _marqueeAnchor = p;
+        _state.ClearSelection();
+        capture();
+        return "marquee";
+    }
+
+    private void BeginMoveShape(IMovableShape shape, Pt g, SelectedObject pick, Action capture)
+    {
+        _movingShape = shape;
+        _moveShapeGrabOffset = new Pt(g.X - shape.X, g.Y - shape.Y);
+        _moveShapeCurrent = new Pt(shape.X, shape.Y);
+        _state?.SelectObject(pick);
+        capture();
+    }
+
+    // Seams de teste headless (mesmo código do gesto real, sem HWND).
+    public string SimulateSelectTap(Pt local)
+    {
+        if (_state is null || _state.ActiveTool != ToolKind.Select) return "ignored";
+        if (IsEditingText)
+            CommitEditRequested?.Invoke();
+        return HandleSelectTap(local, () => { });
+    }
+
+    // Arrastar completo de texto: seleciona, arrasta ao vivo e commita no Up.
+    public void SimulateTextDrag(Pt fromLocal, Pt toLocal)
+    {
+        if (_state is null || _state.ActiveTool != ToolKind.Select) return;
+        SimulateSelectTap(fromLocal);
+        MoveAt(toLocal);
+        EndAt(toLocal);
+    }
+
+    // Arrastar genérico de qualquer objeto selecionável (texto/captura/
+    // retângulo/círculo): mesmo gesto real, sem HWND.
+    public void SimulateObjectDrag(Pt fromLocal, Pt toLocal)
+    {
+        if (_state is null || _state.ActiveTool != ToolKind.Select) return;
+        SimulateSelectTap(fromLocal);
+        MoveAt(toLocal);
+        EndAt(toLocal);
+    }
+
+    // Drag de criação de forma (ferramenta Rectangle/Circle): Down→Move→Up.
+    public void SimulateShapeDrag(Pt fromLocal, Pt toLocal)
+    {
+        if (_state is null) return;
+        BeginAt(fromLocal, "test", () => { });
+        MoveAt(toLocal);
+        EndAt(toLocal);
+    }
+
     private void MoveAt(Pt p)
     {
         if (_state is null) return;
         if (IsEditingText || _state.ActiveTool == ToolKind.Text) return; // texto: sem gesto
+        if (_movingText is not null)
+        {
+            // Arrasto ao vivo move SÓ o visual (Offset delta, sem re-render);
+            // o modelo commita no Up via MoveTextCommand (undo puro, sem spam).
+            Pt gt = Frame.ToGlobal(p);
+            _moveTextCurrent = new Pt(gt.X - _moveTextGrabOffset.X, gt.Y - _moveTextGrabOffset.Y);
+            if (_textVisuals.TryGetValue(_movingText.Id, out var tvisual))
+            {
+                var tlocal = Frame.ToLocal(_moveTextCurrent);
+                var origin = Frame.ToLocal(new Pt(_movingText.X, _movingText.Y));
+                tvisual.Offset = new Vector(tlocal.X - origin.X, tlocal.Y - origin.Y);
+            }
+            // Highlight acompanha o visual (modelo só commita no Up).
+            WpfStrokeRenderer.RenderMarquee(_selection, Frame.ToLocal(new RectD(
+                _moveTextCurrent.X, _moveTextCurrent.Y, _movingText.WidthPx, _movingText.HeightPx)));
+            return;
+        }
         if (_movingScreen is not null)
         {
             // Arrasto ao vivo move SÓ o visual (Offset, sem re-render); o modelo
@@ -433,6 +692,28 @@ public sealed class InkSurface : FrameworkElement
             // Highlight acompanha o visual (modelo só commita no Up).
             WpfStrokeRenderer.RenderMarquee(_selection, Frame.ToLocal(new RectD(
                 _moveCurrent.X, _moveCurrent.Y, _movingScreen.WidthPx, _movingScreen.HeightPx)));
+            return;
+        }
+        if (_movingShape is not null)
+        {
+            // Mesmo padrão das demais formas: só o visual (Offset) + highlight;
+            // o modelo commita no Up via MoveShapeCommand genérico (REQ8).
+            Pt g = Frame.ToGlobal(p);
+            _moveShapeCurrent = new Pt(g.X - _moveShapeGrabOffset.X, g.Y - _moveShapeGrabOffset.Y);
+            DrawingVisual? svisual = _movingShape.Kind switch
+            {
+                CanvasObjectKind.Rectangle when _rectVisuals.TryGetValue(_movingShape.Id, out var rv) => rv,
+                CanvasObjectKind.Circle when _circleVisuals.TryGetValue(_movingShape.Id, out var cv) => cv,
+                _ => null,
+            };
+            if (svisual is not null)
+            {
+                var local = Frame.ToLocal(_moveShapeCurrent);
+                svisual.Offset = new Vector(local.X, local.Y);
+            }
+            WpfStrokeRenderer.RenderMarquee(_selection,
+                Frame.ToLocal(new RectD(_moveShapeCurrent.X, _moveShapeCurrent.Y,
+                    _movingShape.Bounds.Width, _movingShape.Bounds.Height)));
             return;
         }
         if (_marqueeing)
@@ -471,10 +752,23 @@ public sealed class InkSurface : FrameworkElement
     {
         if (_state is null) return;
         if (_state.ActiveTool == ToolKind.Text) return; // texto: sem gesto
+        if (_movingText is not null && _state is not null)
+        {
+            // Sem mudança = MoveText recusa (sem comando, sem undo vazio).
+            _state.MoveText(_movingText.Id, _moveTextCurrent.X, _moveTextCurrent.Y);
+            _movingText = null;
+        }
         if (_movingScreen is not null && _state is not null)
         {
             _state.MoveScreen(_movingScreen.Id, _moveCurrent.X, _moveCurrent.Y);
             _movingScreen = null;
+        }
+        if (_movingShape is not null && _state is not null)
+        {
+            // Sem mudança = MoveShape recusa (sem comando, sem undo vazio).
+            _state.MoveShape(_movingShape.Kind, _movingShape.Id,
+                _moveShapeCurrent.X, _moveShapeCurrent.Y);
+            _movingShape = null;
         }
         if (_marqueeing)
         {
@@ -498,11 +792,31 @@ public sealed class InkSurface : FrameworkElement
             _raw = new List<Pt>();
         }
         if (_shaping && _state is not null)
-            _state.AddShape(_state.ActiveTool, Frame.ToGlobal(_anchor), Frame.ToGlobal(p),
-                _state.Presets[_state.ActiveTool].WidthDip * Frame.PxPerDipX);
+        {
+            if (_state.ActiveTool is ToolKind.Rectangle or ToolKind.Circle)
+                CommitShape(_state.ActiveTool, Frame.ToGlobal(_anchor), Frame.ToGlobal(p));
+            else
+                _state.AddShape(_state.ActiveTool, Frame.ToGlobal(_anchor), Frame.ToGlobal(p),
+                    _state.Presets[_state.ActiveTool].WidthDip * Frame.PxPerDipX);
+        }
         _drawing = false;
         _erasing = false;
         _shaping = false;
+    }
+
+    // Commit de forma paramétrica (REQ2): normaliza o drag (qualquer direção),
+    // converte p/ px globais e cria UM objeto (mínimo não atinge = cancelado,
+    // sem undo). Preview some via evento de Added (ClearPreview).
+    private void CommitShape(ToolKind tool, Pt a, Pt b)
+    {
+        if (_state is null) return;
+        var bounds = ShapeGeometry.Normalize(a, b);
+        var preset = _state.Presets[tool];
+        float widthPx = preset.WidthDip * Frame.PxPerDipX;
+        if (tool == ToolKind.Circle)
+            _state.AddCircle(bounds, preset.Color, widthPx);
+        else
+            _state.AddRectangle(bounds, preset.Color, widthPx);
     }
 
     private async Task CommitMarqueeAsync(RectD rect)
@@ -535,28 +849,77 @@ public sealed class InkSurface : FrameworkElement
         _state.AddScreen(img.Bgra, img.PixelWidth, img.PixelHeight, global);
     }
 
-    private ScreenObject? PickScreen(Pt p)
-    {
-        if (_state is null) return null;
-        var all = _state.Screens;
-        for (int i = all.Count - 1; i >= 0; i--) // topo primeiro (z-order)
-            if (all[i].Contains(p)) return all[i];
-        return null;
-    }
-
     private static RectD NormalizeMarquee(Pt a, Pt b) => new(
         Math.Min(a.X, b.X), Math.Min(a.Y, b.Y),
         Math.Abs(b.X - a.X), Math.Abs(b.Y - a.Y));
 
+    // Feedback visual (REQ2): bounding box/outline tracejado sobre o objeto
+    // selecionado, sem alterar sua aparência permanente. MOVE ao vivo junto
+    // com o visual arrastado (MoveAt redesenha); aqui é o estado commitado.
     private void RefreshSelection()
     {
-        if (_state?.SelectedScreenId is int id
-            && _state.Screens.FirstOrDefault(s => s.Id == id) is { } s)
-            WpfStrokeRenderer.RenderMarquee(_selection, Frame.ToLocal(s.Bounds)); // mesmo tracejado do marquee
+        RectD? bounds = _state?.SelectedObject switch
+        {
+            { Kind: CanvasObjectKind.Text } sel
+                when _state.Texts.FirstOrDefault(t => t.Id == sel.Id) is { } tt
+                => new RectD(tt.X, tt.Y, tt.WidthPx, tt.HeightPx),
+            { Kind: CanvasObjectKind.Screen } sel
+                when _state.Screens.FirstOrDefault(s => s.Id == sel.Id) is { } s
+                => s.Bounds,
+            { Kind: CanvasObjectKind.Rectangle } sel
+                when _state.Rectangles.FirstOrDefault(r => r.Id == sel.Id) is { } r
+                => r.Bounds,
+            { Kind: CanvasObjectKind.Circle } sel
+                when _state.Circles.FirstOrDefault(c => c.Id == sel.Id) is { } c
+                => c.Bounds,
+            _ => null,
+        };
+        if (bounds.HasValue)
+            WpfStrokeRenderer.RenderMarquee(_selection, Frame.ToLocal(bounds.Value));
         else
         {
             using var dc = _selection.RenderOpen(); // sem seleção: highlight vazio
         }
+        // Estado (modo/ferramenta/cor/espessura) mudou: anel reavalia na última
+        // posição (some se virou interagir/Select; troca de cor/espessura ao vivo).
+        if (_lastRingPos is { } pos) UpdateCursorRing(pos);
+    }
+
+    // Anel do cursor (F-14): raio = espessura/2 em DIP local, anel na cor ativa
+    // + halo escuro (contraste em qualquer fundo). Sem timers: só renderiza em
+    // evento de input ou mudança de estado. Some no modo interagir, tinta
+    // oculta e nas ferramentas de navegação (Select/Text).
+    private void UpdateCursorRing(Pt p)
+    {
+        if (_state is null || !_state.IsDrawMode || !_state.InkVisible
+            || _state.ActiveTool is ToolKind.Select or ToolKind.Text)
+        {
+            _lastRingPos = null;
+            using (_cursorRing.RenderOpen()) { }
+            return;
+        }
+        _lastRingPos = p;
+        var color = _state.ActiveColor;
+        float width = _state.ActiveWidth;
+        if (_ringPen is null || !color.Equals(_ringColorKey) || Math.Abs(width - _ringWidthKey) > 0.01f)
+        {
+            _ringColorKey = color;
+            _ringWidthKey = width;
+            var media = Color.FromRgb(color.R, color.G, color.B);
+            var halo = new Pen(new SolidColorBrush(Color.FromArgb(0x99, 0, 0, 0)), 2.0);
+            var ring = new Pen(new SolidColorBrush(media), 1.5);
+            var dot = new SolidColorBrush(media);
+            halo.Freeze(); ring.Freeze(); dot.Freeze();
+            _ringHaloPen = halo;
+            _ringPen = ring;
+            _ringDotBrush = dot;
+        }
+        double r = Math.Max(3.0, width / 2.0);
+        var center = new Point(p.X, p.Y);
+        using var dc = _cursorRing.RenderOpen();
+        dc.DrawEllipse(null, _ringHaloPen, center, r + 1.25, r + 1.25);
+        dc.DrawEllipse(null, _ringPen, center, r, r);
+        dc.DrawEllipse(_ringDotBrush, null, center, 1.0, 1.0);
     }
 
     private void ClearPreview()
@@ -575,6 +938,13 @@ public sealed class InkSurface : FrameworkElement
     {
         if (_state is null) return;
         var preset = _state.Presets[tool];
+        if (tool is ToolKind.Rectangle or ToolKind.Circle)
+        {
+            // Preview do contorno no rect normalizado (qualquer direção).
+            var rect = ShapeGeometry.Normalize(a, b);
+            WpfStrokeRenderer.RenderShapePreview(_active, tool, rect, preset.Color, preset.WidthDip);
+            return;
+        }
         var points = tool == ToolKind.Line
             ? ShapeBuilder.BuildLine(a, b)
             : ShapeBuilder.BuildArrow(a, b, preset.WidthDip);

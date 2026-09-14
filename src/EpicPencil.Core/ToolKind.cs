@@ -11,7 +11,9 @@ public enum ToolKind
     Highlighter,
     Line,
     Arrow,
+    Rectangle, // contorno paramétrico (RectangleObject, não stroke assado)
+    Circle, // elipse inscrita no bbox (CircleObject, não stroke assado)
     EraserStroke,
-    Select, // seleção de região (captura) + mover captura; não produz stroke
+    Select, // seleção genérica de OBJETO (texto/captura/futuros) + mover + marquee de REGIÃO p/ captura; nunca produz stroke
     Text // texto: clique abre edição; commit cria TextObject (não produz stroke)
 }

@@ -7,9 +7,10 @@
 
 namespace EpicPencil.Core;
 
-public sealed class ScreenObject
+public sealed class ScreenObject : ICanvasObject
 {
     public int Id { get; }
+    public CanvasObjectKind Kind => CanvasObjectKind.Screen;
     public float X { get; set; } // mutado SOMENTE via MoveScreenCommand
     public float Y { get; set; }
     public float WidthPx { get; } // px globais (marquee convertido na borda)
@@ -33,5 +34,6 @@ public sealed class ScreenObject
 
     public RectD Bounds => new(X, Y, WidthPx, HeightPx);
     public bool Contains(Pt p) => Bounds.Contains(p);
+    public bool HitTest(Pt p) => Contains(p);
     public long ByteSize => Bgra.LongLength;
 }

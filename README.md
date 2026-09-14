@@ -70,6 +70,8 @@ arrastável pelo grip (⋮⋮) para qualquer posição da tela:
   **Texto (T)**: clique no canvas abre caixa de edição (Enter confirma,
   Escape cancela, clicar fora confirma); fonte **Space Mono embutida**
   (fallback Consolas) com tamanhos 12–64 selecionáveis na linha TEXTO.
+  Com **Seleção (V)**: clique seleciona o texto (bounding box), arrastar move
+  (undo/redo), duplo-clique reedita, borracha apaga; textos saem no Ctrl+C/S.
 - **Cor e espessura**: 6 swatches circulares (anel branco = selecionada) +
   slider de espessura 1–10 (presets maiores, ex. marca-texto, pinam no máximo
   até o primeiro ajuste).

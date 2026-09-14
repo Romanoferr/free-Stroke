@@ -55,14 +55,17 @@ internal static class CaptureExport
     );
 
     // Compõe o modelo sobre o bitmap capturado (z-order da tela: capturas,
-    // depois tinta, depois textos). Retorna a base intacta (fast path) quando
+    // depois tinta, formas e textos). Retorna a base intacta (fast path) quando
     // nada cruza a região. Nunca desenha chrome de seleção — só pixels da tela
-    // + conteúdo do modelo.
+    // + conteúdo do modelo. Formas entram como contorno vetorial (REQ10), sem
+    // rasterizar nada no Document.
     public static BitmapSource CompositeModel(
         BitmapSource captured, int originX, int originY,
         IReadOnlyList<Stroke> strokes,
         IReadOnlyList<ScreenObject>? screens = null,
-        IReadOnlyList<TextObject>? texts = null)
+        IReadOnlyList<TextObject>? texts = null,
+        IReadOnlyList<RectangleObject>? rectangles = null,
+        IReadOnlyList<CircleObject>? circles = null)
     {
         var region = new RectD(originX, originY, captured.PixelWidth, captured.PixelHeight);
         List<Stroke>? hit = null;
@@ -80,11 +83,20 @@ internal static class CaptureExport
         List<TextObject>? hitTexts = null;
         if (texts is not null)
             foreach (var t in texts)
-                if (t.X < region.Right && t.Y < region.Bottom &&
-                    t.X + t.FontSizePx * Math.Max(1, t.Content.Length) >= region.X &&
-                    t.Y + t.FontSizePx >= region.Y)
+                if (t.Bounds.Intersects(region))
                     (hitTexts ??= new List<TextObject>()).Add(t);
-        if (hit is null && hitScreens is null && hitTexts is null) return captured;
+        List<RectangleObject>? hitRects = null;
+        if (rectangles is not null)
+            foreach (var r in rectangles)
+                if (r.Bounds.Intersects(region))
+                    (hitRects ??= new List<RectangleObject>()).Add(r);
+        List<CircleObject>? hitCircles = null;
+        if (circles is not null)
+            foreach (var c in circles)
+                if (c.Bounds.Intersects(region))
+                    (hitCircles ??= new List<CircleObject>()).Add(c);
+        if (hit is null && hitScreens is null && hitTexts is null
+            && hitRects is null && hitCircles is null) return captured;
 
         var root = new System.Windows.Media.DrawingVisual();
         using (var dc = root.RenderOpen())
@@ -102,6 +114,19 @@ internal static class CaptureExport
                         local.Add(new Pt(p.X - originX, p.Y - originY));
                     WpfStrokeRenderer.RenderStrokeInto(dc, local, s.Color, s.WidthPx, s.Tool, s.Opacity);
                 }
+            // Formas: contorno na origem local (global − origem do BitBlt).
+            // Ordem aproximada (screens → strokes → formas → textos); o
+            // z-order exato entre tipos nasce do Id de criação no overlay.
+            if (hitRects is not null)
+                foreach (var r in hitRects)
+                    WpfStrokeRenderer.RenderShapeInto(dc, ToolKind.Rectangle,
+                        new RectD(r.X - originX, r.Y - originY, r.WidthPx, r.HeightPx),
+                        r.Color, r.StrokeWidthPx);
+            if (hitCircles is not null)
+                foreach (var c in hitCircles)
+                    WpfStrokeRenderer.RenderShapeInto(dc, ToolKind.Circle,
+                        new RectD(c.X - originX, c.Y - originY, c.WidthPx, c.HeightPx),
+                        c.Color, c.StrokeWidthPx);
             if (hitTexts is not null)
                 foreach (var t in hitTexts)
                     dc.DrawText(

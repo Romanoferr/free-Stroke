@@ -82,6 +82,54 @@ internal static class WpfStrokeRenderer
         return visual;
     }
 
+    // Formas geométricas (somente contorno, sem preenchimento): geometria
+    // desenhada em (0,0,W,H) + Offset=(X,Y) — mover = trocar Offset, sem
+    // re-render (mesmo padrão da captura). Rect/pontos em DIP local.
+    public static DrawingVisual BuildRectangleVisual(RectD localRect, Rgba color, float widthDip)
+    {
+        var visual = new DrawingVisual();
+        using (var dc = visual.RenderOpen())
+            RenderShapeInto(dc, ToolKind.Rectangle,
+                new RectD(0, 0, localRect.Width, localRect.Height), color, widthDip);
+        visual.Offset = new Vector(localRect.X, localRect.Y);
+        return visual;
+    }
+
+    public static DrawingVisual BuildCircleVisual(RectD localRect, Rgba color, float widthDip)
+    {
+        var visual = new DrawingVisual();
+        using (var dc = visual.RenderOpen())
+            RenderShapeInto(dc, ToolKind.Circle,
+                new RectD(0, 0, localRect.Width, localRect.Height), color, widthDip);
+        visual.Offset = new Vector(localRect.X, localRect.Y);
+        return visual;
+    }
+
+    // Preview da forma durante o drag: reconstrói 1 visual pequeno por move
+    // (sem objeto no Document, sem histórico — REQ13).
+    public static void RenderShapePreview(DrawingVisual active, ToolKind tool,
+        RectD localRect, Rgba color, float widthDip)
+    {
+        using var dc = active.RenderOpen();
+        RenderShapeInto(dc, tool, localRect, color, widthDip);
+    }
+
+    // Núcleo reutilizável num DrawingContext arbitrário (preview interativo
+    // + visual finalizado + exportação Ctrl+C/S — nunca desenha seleção).
+    public static void RenderShapeInto(DrawingContext dc, ToolKind tool,
+        RectD localRect, Rgba color, float width)
+    {
+        var pen = GetPen(color, width, 1f, tool);
+        var rect = new System.Windows.Rect(localRect.X, localRect.Y, localRect.Width, localRect.Height);
+        if (tool == ToolKind.Circle)
+            dc.DrawEllipse(null, pen,
+                new System.Windows.Point(localRect.X + localRect.Width / 2,
+                    localRect.Y + localRect.Height / 2),
+                localRect.Width / 2, localRect.Height / 2);
+        else
+            dc.DrawRectangle(null, pen, rect);
+    }
+
     // Overload com pontos já convertidos p/ o frame local do overlay
     // (multi-monitor: o stroke vive em px globais no modelo; a largura chega
     // em DIP local = px ÷ escala). Sem overload direto de Stroke de propósito:

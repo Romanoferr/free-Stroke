@@ -22,6 +22,7 @@ public partial class OverlayWindow : Window
     private float _editDip;
     private Rgba _editColor;
     private IntPtr _prevForeground;
+    private int? _editTextId; // null = criação; valor = reedição do TextObject
 
     // Topologia mudou (plug/unplug/resolução/escala/primário): o App reconstrói
     // os overlays com debounce. Evento de instância (App assina cada overlay).
@@ -68,6 +69,7 @@ public partial class OverlayWindow : Window
             Log.Info($"janela PreviewMouseDown btn={e.ChangedButton} x={e.GetPosition(this).X:F0} y={e.GetPosition(this).Y:F0}")),
             handledEventsToo: true);
         Surface.TextEditRequested += OnTextEditRequested;
+        Surface.TextReeditRequested += OpenEditorForText;
         Surface.CommitEditRequested = CommitEdit;
         TextEditor.PreviewKeyDown += OnEditorKey;
         TextEditor.LostKeyboardFocus += (_, _) => CommitEdit();
@@ -123,15 +125,32 @@ public partial class OverlayWindow : Window
     private void OnTextEditRequested(Pt local)
     {
         CommitEdit(); // segurança: nunca duas caixas (BeginAt já commitou)
+        ShowEditor(local, _state.ActiveFontSizeDip, _state.ActiveColor, string.Empty, null);
+    }
+
+    // Reedição (duplo-toque com Select): pré-preenche com o conteúdo atual e
+    // preserva fonte/tamanho/cor do objeto. O commit atualiza o MESMO objeto.
+    private void OpenEditorForText(TextObject text)
+    {
+        CommitEdit(); // segurança: nunca duas caixas
+        var local = Surface.Frame.ToLocal(new Pt(text.X, text.Y));
+        ShowEditor(local, text.FontSizePx / Surface.Frame.PxPerDipX,
+            text.Color, text.Content, text.Id);
+    }
+
+    private void ShowEditor(Pt local, float dip, Rgba color, string initial, int? textId)
+    {
         if (_hwnd == IntPtr.Zero) return;
         _editLocal = local;
-        _editDip = _state.ActiveFontSizeDip;
-        _editColor = _state.ActiveColor;
+        _editDip = dip;
+        _editColor = color;
+        _editTextId = textId;
         TextEditor.FontFamily = TextFonts.Family;
-        TextEditor.FontSize = _editDip;
+        TextEditor.FontSize = dip;
         TextEditor.Foreground = new System.Windows.Media.SolidColorBrush(
-            System.Windows.Media.Color.FromRgb(_editColor.R, _editColor.G, _editColor.B));
-        TextEditor.Text = string.Empty;
+            System.Windows.Media.Color.FromRgb(color.R, color.G, color.B));
+        TextEditor.Text = initial;
+        if (initial.Length > 0) TextEditor.SelectAll(); // troca rápida do conteúdo
         TextEditor.Margin = new Thickness(local.X, local.Y, 0, 0);
         TextEditor.Visibility = Visibility.Visible;
         Surface.IsEditingText = true;
@@ -141,8 +160,8 @@ public partial class OverlayWindow : Window
         Activate();
         TextEditor.Focus();
         _editingText = true;
-        Log.Info($"edição texto aberta local=({local.X:F0},{local.Y:F0}) fonte={_editDip:F0}dip " +
-            $"fg={OverlayBehavior.Describe(_hwnd)}");
+        Log.Info($"edição texto aberta local=({local.X:F0},{local.Y:F0}) fonte={dip:F0}dip " +
+            $"reedit={textId?.ToString() ?? "-"} fg={OverlayBehavior.Describe(_hwnd)}");
     }
 
     private void OnEditorKey(object sender, KeyEventArgs e)
@@ -153,8 +172,10 @@ public partial class OverlayWindow : Window
         else if (e.Key == Key.Escape) { CancelEdit(); e.Handled = true; }
     }
 
-    // Commit: fecha a caixa e cria o TextObject (posição/tamanho em px globais
-    // na escala deste monitor). Vazio = descarta sem objeto e sem undo.
+    // Commit: fecha a caixa e persiste. Criação mede e cria TextObject
+    // (posição/tamanho/métricas em px globais na escala deste monitor);
+    // reedição atualiza o MESMO objeto (conteúdo novo, resto preservado).
+    // Vazio ou idêntico = preserva anterior (sem comando, sem undo vazio).
     private void CommitEdit()
     {
         if (!_editingText) return;
@@ -163,15 +184,32 @@ public partial class OverlayWindow : Window
         float dip = _editDip;
         Rgba color = _editColor;
         Pt local = _editLocal;
+        int? textId = _editTextId;
+        _editTextId = null;
         HideEditorChrome();
+        var g = Surface.Frame.ToGlobal(local);
+        float scale = Surface.Frame.PxPerDipX;
+        if (textId is int eid)
+        {
+            var orig = _state.Texts.FirstOrDefault(t => t.Id == eid);
+            if (orig is null || string.IsNullOrWhiteSpace(text))
+            {
+                Log.Info("reedição vazia/órfã: conteúdo anterior preservado");
+                return;
+            }
+            if (text.TrimEnd() == orig.Content) return; // sem mudança
+            var (w, h) = TextMeasure.Measure(text.TrimEnd(), orig.FontFamily, orig.FontSizePx);
+            _state.UpdateText(eid, text, orig.FontSizePx, w, h);
+            return;
+        }
         if (string.IsNullOrWhiteSpace(text))
         {
             Log.Info("texto vazio descartado (sem objeto, sem undo)");
             return;
         }
-        var g = Surface.Frame.ToGlobal(local);
-        _state.AddText(text, g.X, g.Y, dip * Surface.Frame.PxPerDipX,
-            TextFonts.PreferredFamily, color);
+        float sizePx = dip * scale;
+        var (w2, h2) = TextMeasure.Measure(text.TrimEnd(), TextFonts.PreferredFamily, sizePx);
+        _state.AddText(text, g.X, g.Y, sizePx, TextFonts.PreferredFamily, color, w2, h2);
     }
 
     private void CancelEdit()
@@ -232,10 +270,9 @@ public partial class OverlayWindow : Window
         if (_hwnd == IntPtr.Zero) { Log.Warn("ApplyState sem HWND (janela ainda não criada)"); return; }
         OverlayBehavior.SetClickThrough(_hwnd, !_state.IsDrawMode);
         Surface.Visibility = _state.InkVisible ? Visibility.Visible : Visibility.Hidden;
-        ModeBadge.Fill = _state.IsDrawMode ? System.Windows.Media.Brushes.LimeGreen
-            : System.Windows.Media.Brushes.OrangeRed;
-        ModeBadge.ToolTip = _state.IsDrawMode ? "Modo desenho (clique e arraste para riscar)"
-            : "Modo interagir (cliques atravessam — volte pela toolbar)";
+        // Indicador de modo: só a toolbar (olho com cor+ícone). O badge fixo no
+        // overlay poluía todos os monitores mesmo no modo interagir (F-12
+        // continua atendido — indicador inequívoco existe, na toolbar).
         Log.Info($"overlay mon={_monitor.Id} aplicado modo={(_state.IsDrawMode ? "desenho" : "interagir")} " +
             $"clickThrough={OverlayBehavior.IsClickThrough(_hwnd)} tinta={_state.InkVisible}");
     }

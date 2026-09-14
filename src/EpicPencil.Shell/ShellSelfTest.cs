@@ -40,6 +40,9 @@ internal static class ShellSelfTest
         RunToolbarUI(Check);
         RunExportHotkeys(Check);
         RunText(Check);
+        RunTextInteract(Check);
+        RunObjectSelection(Check);
+        RunShapes(Check);
         Console.WriteLine(failures.Count == 0 ? "SHELL SELFTEST OK" : $"FALHOU: {failures.Count}");
         return failures.Count == 0 ? 0 : 1;
     }
@@ -367,8 +370,8 @@ internal static class ShellSelfTest
             "selected visual segue a ferramenta ativa");
         Check(toolbar.PenButton.ToolTip is string tip && tip.Contains("(P)"),
             "botão-ícone tem tooltip com atalho");
-        Check(toolbar.ThicknessSlider.Minimum == 1 && toolbar.ThicknessSlider.Maximum == 10,
-            "slider de espessura 1–10");
+        Check(toolbar.ThicknessSlider.Minimum == 1 && toolbar.ThicknessSlider.Maximum == 64,
+            "slider de espessura 1–64 (range real)");
         Check(toolbar.DiagnosticsRow.Visibility == Visibility.Collapsed,
             "diagnósticos ocultos (produção)");
 
@@ -517,12 +520,13 @@ internal static class ShellSelfTest
 
         // Modelo: commit, vazio descartado, undo/redo, clear.
         var state = new AppState();
-        Check(state.AddText("", 10, 10, 20f, TextFonts.PreferredFamily, new Rgba(0, 0, 0)) is null,
+        Check(state.AddText("", 10, 10, 20f, TextFonts.PreferredFamily, new Rgba(0, 0, 0), 10, 10) is null,
             "texto vazio não cria objeto");
-        Check(state.AddText("   ", 10, 10, 20f, TextFonts.PreferredFamily, new Rgba(0, 0, 0)) is null,
+        Check(state.AddText("   ", 10, 10, 20f, TextFonts.PreferredFamily, new Rgba(0, 0, 0), 10, 10) is null,
             "texto em branco não cria objeto");
         Check(state.TextCount == 0 && !state.CanUndo, "vazio não polui o undo");
-        var t1 = state.AddText("Olá", 100, 200, 20f, TextFonts.PreferredFamily, new Rgba(255, 0, 0));
+        var (ow, oh) = TextMeasure.Measure("Olá", TextFonts.PreferredFamily, 20f);
+        var t1 = state.AddText("Olá", 100, 200, 20f, TextFonts.PreferredFamily, new Rgba(255, 0, 0), ow, oh);
         Check(t1 is not null && state.TextCount == 1, "commit cria TextObject");
         Check(t1!.FontFamily == "Space Mono" && Math.Abs(t1.FontSizePx - 20f) < 0.01 &&
             Math.Abs(t1.X - 100) < 0.01 && Math.Abs(t1.Y - 200) < 0.01,
@@ -542,7 +546,8 @@ internal static class ShellSelfTest
         surface.Attach(surfState);
         surface.Measure(new Size(1920, 1080));
         surface.Arrange(new Rect(0, 0, 1920, 1080));
-        surfState.AddText("abc", 50, 60, 20f, TextFonts.PreferredFamily, new Rgba(0, 0, 0));
+        var (abcW, abcH) = TextMeasure.Measure("abc", TextFonts.PreferredFamily, 20f);
+        surfState.AddText("abc", 50, 60, 20f, TextFonts.PreferredFamily, new Rgba(0, 0, 0), abcW, abcH);
         int v1 = ((ContainerVisual)VisualTreeHelper.GetChild(surface, 2)).Children.Count;
         Check(v1 == 1, $"texto vira visual ({v1})");
         surfState.Undo();
@@ -584,7 +589,8 @@ internal static class ShellSelfTest
         var white = new byte[4 * 100 * 100];
         for (int i = 0; i < white.Length; i++) white[i] = 255;
         var baseBmp = CaptureExport.ToBitmapSource(white, 100, 100);
-        var txt = new TextObject(1, 10, 10, "Hi", 20f, "Space Mono", new Rgba(0, 0, 0));
+        var (hiW, hiH) = TextMeasure.Measure("Hi", "Space Mono", 20f);
+        var txt = new TextObject(1, 10, 10, "Hi", 20f, "Space Mono", new Rgba(0, 0, 0), hiW, hiH);
         var comp = CaptureExport.CompositeModel(baseBmp, 0, 0, [], null, [txt]);
         var px = new byte[4 * 100 * 100];
         comp.CopyPixels(new Int32Rect(0, 0, 100, 100), px, 400, 0);
@@ -596,6 +602,404 @@ internal static class ShellSelfTest
                 if (px[o] < 200 || px[o + 1] < 200 || px[o + 2] < 200) { inkFound = true; break; }
             }
         Check(inkFound, "texto composto renderiza tinta");
+    }
+
+    private static TextObject AddTextMeasured(AppState s, string content,
+        float x, float y, float sizePx, Rgba? color = null)
+    {
+        var (w, h) = TextMeasure.Measure(content, TextFonts.PreferredFamily, sizePx);
+        return s.AddText(content, x, y, sizePx, TextFonts.PreferredFamily,
+            color ?? new Rgba(0, 0, 0), w, h)!;
+    }
+
+    private static InkSurface MakeSurface(AppState s)
+    {
+        var surface = new InkSurface();
+        surface.Attach(s);
+        surface.Measure(new Size(1920, 1080));
+        surface.Arrange(new Rect(0, 0, 1920, 1080));
+        return surface;
+    }
+
+    // Localiza o visual do texto pela posição (rebuilds mudam a ordem dos
+    // filhos — índice seria frágil). Superfícies de teste usam frame identidade.
+    private static Rect TextVisualBounds(InkSurface surface, int textId, AppState s)
+    {
+        var kids = ((ContainerVisual)VisualTreeHelper.GetChild(surface, 2)).Children;
+        var t = s.Texts.First(x => x.Id == textId);
+        foreach (var kid in kids)
+            if (kid is DrawingVisual dv)
+            {
+                var b = dv.ContentBounds;
+                if (Math.Abs(b.X - t.X) < 2 && b.Y >= t.Y - 2 && b.Y <= t.Y + t.HeightPx)
+                    return b;
+            }
+        return Rect.Empty;
+    }
+
+    private static bool VisualNear(Rect b, float x, float y, float h) =>
+        !b.IsEmpty && Math.Abs(b.X - x) < 2 && b.Y >= y - 2 && b.Y <= y + h;
+
+    private static void RunTextInteract(Action<bool, string> Check)
+    {
+        // Seleção de objeto × região: exclusividade + prioridades.
+        var sel = new AppState();
+        var tx = AddTextMeasured(sel, "mover", 100, 100, 20f);
+        var surf = MakeSurface(sel);
+        sel.SetTool(ToolKind.Select);
+        Check(surf.SimulateSelectTap(new Pt(105, 105)) == "text", "clique no texto seleciona objeto");
+        Check(sel.SelectedTextId == tx.Id && !sel.SelectedScreenId.HasValue,
+            "texto selecionado, sem captura");
+        Check(surf.SimulateSelectTap(new Pt(1500, 800)) == "marquee", "clique fora inicia marquee");
+        Check(!sel.SelectedTextId.HasValue, "marquee abandona seleção de objeto");
+
+        // Captura continua selecionável; objeto × captura nunca coexistem.
+        sel.AddScreen(new byte[4 * 8 * 6], 8, 6, new RectD(300, 300, 8, 6));
+        Check(sel.SelectedScreenId.HasValue && !sel.SelectedTextId.HasValue,
+            "captura nova desseleciona texto");
+        Check(surf.SimulateSelectTap(new Pt(302, 302)) == "screen", "clique na captura move captura");
+        Check(sel.SelectedScreenId.HasValue && !sel.SelectedTextId.HasValue, "captura exclusiva");
+        sel.SelectText(tx.Id);
+        Check(sel.SelectedTextId == tx.Id && !sel.SelectedScreenId.HasValue, "texto exclusivo");
+
+        // Drag move: modelo + visual + undo/redo.
+        var mv = new AppState();
+        var ta = AddTextMeasured(mv, "arrastar", 100, 100, 20f);
+        var tb = AddTextMeasured(mv, "outro", 500, 500, 20f);
+        var surfM = MakeSurface(mv);
+        mv.SetTool(ToolKind.Select);
+        surfM.SimulateTextDrag(new Pt(105, 105), new Pt(205, 155));
+        Check(Math.Abs(ta.X - 200) < 0.01 && Math.Abs(ta.Y - 150) < 0.01,
+            $"drag move o modelo ({ta.X:F0},{ta.Y:F0})");
+        var b1 = TextVisualBounds(surfM, ta.Id, mv);
+        Check(VisualNear(b1, 200, 150, ta.HeightPx), "visual acompanha o modelo");
+        mv.Undo();
+        Check(Math.Abs(ta.X - 100) < 0.01, "Ctrl+Z volta à origem");
+        var b2 = TextVisualBounds(surfM, ta.Id, mv);
+        Check(VisualNear(b2, 100, 100, ta.HeightPx), "visual volta junto");
+        mv.Redo();
+        Check(Math.Abs(ta.X - 200) < 0.01, "Ctrl+Y reaplica o move");
+
+        // Duplo-toque imediato no mesmo texto = reeditar (não mover).
+        string reedit = "none";
+        surfM.TextReeditRequested += t => reedit = t.Content;
+        Check(surfM.SimulateSelectTap(new Pt(505, 505)) == "text", "texto B seleciona");
+        Check(surfM.SimulateSelectTap(new Pt(506, 506)) == "reedit" && reedit == "outro",
+            "duplo-toque pede reedição");
+        Check(Math.Abs(tb.X - 500) < 0.01, "reedição não move");
+
+        // Reedição: atualiza o mesmo objeto; vazio/idêntico não empilham undo.
+        var (ew, eh) = TextMeasure.Measure("editado", TextFonts.PreferredFamily, 20f);
+        Check(mv.UpdateText(tb.Id, "editado", 20f, ew, eh), "reedição commita");
+        Check(tb.Content == "editado" && mv.TextCount == 2, "mesmo objeto, sem duplicar");
+        Check(!mv.UpdateText(tb.Id, "   ", 20f, ew, eh) && tb.Content == "editado",
+            "reedição vazia preserva anterior");
+        Check(!mv.UpdateText(tb.Id, "editado", 20f, ew, eh), "reedição idêntica é no-op");
+        mv.Undo();
+        Check(tb.Content == "outro", "Ctrl+Z desfaz a reedição");
+        mv.Redo();
+        Check(tb.Content == "editado", "Ctrl+Y refaz a reedição");
+
+        // Troca de tamanho: métricas e visual crescem juntos.
+        var bb1 = TextVisualBounds(surfM, tb.Id, mv);
+        var (fw, fh) = TextMeasure.Measure("editado", TextFonts.PreferredFamily, 40f);
+        Check(mv.UpdateText(tb.Id, "editado", 40f, fw, fh), "troca de tamanho commita");
+        Check(Math.Abs(tb.FontSizePx - 40f) < 0.01, "tamanho persistido");
+        var bb2 = TextVisualBounds(surfM, tb.Id, mv);
+        Check(bb2.Height > bb1.Height + 5, "visual cresce com a fonte");
+
+        // Borracha apaga texto (+ stroke no mesmo gesto = um só undo).
+        var er = new AppState();
+        AddTextMeasured(er, "apagar", 100, 100, 20f);
+        er.AddFreehand(new List<Pt> { new(90, 90), new(200, 200) }, 4f);
+        int erased = er.EraseSegment(new Pt(90, 90), new Pt(200, 200));
+        Check(erased == 2 && er.StrokeCount == 0 && er.TextCount == 0,
+            $"borracha pega stroke+texto ({erased})");
+        er.Undo();
+        Check(er.StrokeCount == 1 && er.TextCount == 1, "um Ctrl+Z restaura os dois");
+        er.Redo();
+        Check(er.StrokeCount == 0 && er.TextCount == 0, "Ctrl+Y reaplica");
+    }
+
+    // Seleção genérica (REQ1–REQ8): objeto via picker único, mover sem
+    // strokes, Delete genérico + undo/redo, Escape/área vazia desseleciona,
+    // sobreposição texto > captura, região (marquee) continua separada.
+    private static void RunObjectSelection(Action<bool, string> Check)
+    {
+        var state = new AppState();
+        var ta = AddTextMeasured(state, "um", 100, 100, 20f);
+        var tb = AddTextMeasured(state, "dois", 500, 500, 20f);
+        var surf = MakeSurface(state);
+        state.SetTool(ToolKind.Select);
+        int strokes0 = state.StrokeCount;
+
+        Check(surf.SimulateSelectTap(new Pt(105, 105)) == "text", "sel: clique seleciona texto A");
+        Check(state.SelectedObject is { Kind: CanvasObjectKind.Text } so && so.Id == ta.Id,
+            "sel: SelectedObject = texto A");
+        Check(surf.SimulateSelectTap(new Pt(505, 505)) == "text"
+            && state.SelectedObject?.Id == tb.Id, "sel: troca p/ texto B");
+
+        // Área vazia desseleciona (e inicia marquee, sem criar objeto).
+        Check(surf.SimulateSelectTap(new Pt(1500, 800)) == "marquee", "sel: vazio inicia marquee");
+        Check(!state.HasSelection, "sel: vazio desseleciona");
+        Check(state.StrokeCount == strokes0, "sel: nenhum movimento cria strokes");
+
+        // Escape (ClearSelection, mesmo caminho da toolbar) desseleciona.
+        surf.SimulateSelectTap(new Pt(105, 105));
+        Check(state.HasSelection, "sel: re-seleciona A");
+        state.ClearSelection();
+        Check(!state.HasSelection, "sel: Escape limpa seleção");
+
+        // Delete genérico no texto + undo/redo (ponto deslocado >8px p/
+        // não cair no duplo-toque de reedição, que não move/seleciona).
+        surf.SimulateSelectTap(new Pt(105, 115));
+        Check(state.DeleteSelectedObject(), "sel: Delete remove texto");
+        Check(state.TextCount == 1 && !state.HasSelection, "sel: remoção limpa seleção");
+        state.Undo();
+        Check(state.TextCount == 2, "sel: undo restaura texto");
+        state.Redo();
+        Check(state.TextCount == 1, "sel: redo reaplica remoção");
+        state.Undo();
+        Check(state.TextCount == 2, "sel: undo final restaura p/ próximos passos");
+
+        // Sobreposição: texto acima da captura tem prioridade.
+        state.AddScreen(new byte[4 * 8 * 6], 8, 6, new RectD(90, 90, 200, 200));
+        state.SelectObject(new SelectedObject(CanvasObjectKind.Text, ta.Id));
+        Check(surf.SimulateSelectTap(new Pt(105, 105)) == "text", "sel: sobreposto prefere texto");
+        Check(state.SelectedObject?.Kind == CanvasObjectKind.Text, "sel: topo = texto");
+
+        // Captura seleciona/move via mesmo slot genérico; move + undo.
+        Check(surf.SimulateSelectTap(new Pt(250, 250)) == "screen", "sel: captura seleciona");
+        Check(state.SelectedObject?.Kind == CanvasObjectKind.Screen, "sel: slot = captura");
+        var cap = state.Screens[^1];
+        float cx = cap.X, cy = cap.Y;
+        Check(state.MoveScreen(cap.Id, cx + 50, cy + 40), "sel: captura move");
+        state.Undo();
+        Check(Math.Abs(cap.X - cx) < 0.01, "sel: undo volta captura");
+        state.Redo();
+        Check(Math.Abs(cap.X - (cx + 50)) < 0.01, "sel: redo reaplica captura");
+
+        // Delete genérico na captura + undo.
+        state.SelectObject(new SelectedObject(CanvasObjectKind.Screen, cap.Id));
+        Check(state.DeleteSelectedObject(), "sel: Delete remove captura");
+        Check(state.ScreenCount == 0, "sel: zero capturas");
+        state.Undo();
+        Check(state.ScreenCount == 1, "sel: undo restaura captura");
+
+        // Região (marquee) continua funcionando e não seleciona objeto.
+        surf.CaptureFlow = new FakeFlow();
+        surf.SimulateMarqueeAsync(new RectD(600, 100, 120, 90)).GetAwaiter().GetResult();
+        Check(state.SelectedObject?.Kind == CanvasObjectKind.Screen, "sel: marquee cria captura auto-selecionada");
+        Check(state.StrokeCount == strokes0, "sel: marquee não cria strokes");
+    }
+
+    // Formas geométricas (REQ1–REQ14): criação nas 4 direções, cor/espessura,
+    // mínimo, seleção de contorno, move/delete/undo/redo genéricos, z-order,
+    // export com formas, multi-monitor/DPI e hotkeys R/O.
+    private static void RunShapes(Action<bool, string> Check)
+    {
+        var state = new AppState();
+        var surf = MakeSurface(state);
+        int strokes0 = state.StrokeCount;
+
+        // Criação nas 4 direções via gesto real (Down→Move→Up), sem strokes.
+        state.SetTool(ToolKind.Rectangle);
+        surf.SimulateShapeDrag(new Pt(100, 100), new Pt(300, 200));
+        Check(state.RectangleCount == 1, "shape: retângulo TL→BR cria");
+        var r1 = state.Rectangles[^1];
+        Check(Math.Abs(r1.X - 100) < 0.01 && Math.Abs(r1.Y - 100) < 0.01
+            && Math.Abs(r1.WidthPx - 200) < 0.01 && Math.Abs(r1.HeightPx - 100) < 0.01,
+            $"shape: bounds normalizados ({r1.X:F0},{r1.Y:F0} {r1.WidthPx:F0}x{r1.HeightPx:F0})");
+        surf.SimulateShapeDrag(new Pt(300, 200), new Pt(100, 100));
+        surf.SimulateShapeDrag(new Pt(300, 100), new Pt(100, 200));
+        surf.SimulateShapeDrag(new Pt(100, 200), new Pt(300, 100));
+        Check(state.RectangleCount == 4, "shape: 4 direções criam 4 retângulos");
+        Check(state.Rectangles.All(r => Math.Abs(r.X - 100) < 0.01 && Math.Abs(r.Y - 100) < 0.01),
+            "shape: todas as direções normalizam p/ o mesmo bbox");
+        Check(state.StrokeCount == strokes0, "shape: criação não cria strokes");
+
+        // Cor/espessura congeladas do preset; mínimo cancela sem undo.
+        Check(r1.Color.Equals(state.Presets[ToolKind.Rectangle].Color), "shape: cor do preset");
+        Check(Math.Abs(r1.StrokeWidthPx - state.Presets[ToolKind.Rectangle].WidthDip) < 0.01,
+            "shape: espessura do preset");
+        int undoBefore = state.CanUndo ? 1 : 0;
+        state.SetTool(ToolKind.Rectangle);
+        surf.SimulateShapeDrag(new Pt(500, 500), new Pt(501, 501));
+        Check(state.RectangleCount == 4, "shape: clique sem arrasto não cria");
+        int undoAfter = state.CanUndo ? 1 : 0;
+        Check(undoBefore == undoAfter, "shape: mínimo não polui o undo");
+
+        // Undo/redo da criação.
+        state.Undo();
+        Check(state.RectangleCount == 3, "shape: Ctrl+Z remove retângulo");
+        state.Redo();
+        Check(state.RectangleCount == 4, "shape: Ctrl+Y restaura retângulo");
+
+        // Círculo (elipse no bbox): criação + contorno.
+        state.SetTool(ToolKind.Circle);
+        surf.SimulateShapeDrag(new Pt(600, 100), new Pt(720, 180));
+        Check(state.CircleCount == 1, "shape: círculo cria");
+        var c1 = state.Circles[^1];
+        Check(Math.Abs(c1.X - 600) < 0.01 && Math.Abs(c1.WidthPx - 120) < 0.01
+            && Math.Abs(c1.HeightPx - 80) < 0.01, "shape: bbox do círculo");
+        Check(c1.Color.Equals(state.Presets[ToolKind.Circle].Color), "shape: cor do círculo");
+
+        // Seleção de contorno com V: borda seleciona, interior vazio não.
+        state.SetTool(ToolKind.Select);
+        Check(surf.SimulateSelectTap(new Pt(100, 150)) == "rectangle", "shape: clique na borda seleciona ret");
+        Check(state.SelectedObject?.Kind == CanvasObjectKind.Rectangle, "shape: slot = retângulo");
+        Check(surf.SimulateSelectTap(new Pt(200, 150)) == "marquee", "shape: interior vazio não seleciona");
+        Check(!state.HasSelection, "shape: interior vazio desseleciona");
+        Check(surf.SimulateSelectTap(new Pt(720, 140)) == "circle", "shape: clique no contorno seleciona circ");
+        Check(surf.SimulateSelectTap(new Pt(660, 140)) == "marquee", "shape: centro do círculo não seleciona");
+
+        // Escape limpa; move via drag + undo/redo (modelo = mesmo objeto).
+        surf.SimulateSelectTap(new Pt(100, 150));
+        Check(state.HasSelection, "shape: re-seleciona ret");
+        state.ClearSelection();
+        Check(!state.HasSelection, "shape: Escape limpa seleção da forma");
+        // Move do retângulo do TOPO (Id maior = visualmente acima; os 4
+        // criados ocupam o mesmo bbox, então o pick sempre pega o mais novo).
+        var mover = state.Rectangles[^1];
+        int moverId = mover.Id;
+        surf.SimulateObjectDrag(new Pt(100, 150), new Pt(150, 180));
+        Check(Math.Abs(mover.X - 150) < 0.01 && Math.Abs(mover.Y - 130) < 0.01,
+            $"shape: drag move o modelo ({mover.X:F0},{mover.Y:F0})");
+        Check(ReferenceEquals(state.Rectangles.First(r => r.Id == moverId), mover),
+            "shape: mover preserva o objeto (sem bitmap)");
+        state.Undo();
+        Check(Math.Abs(mover.X - 100) < 0.01 && Math.Abs(mover.Y - 100) < 0.01,
+            "shape: Ctrl+Z volta à origem");
+        state.Redo();
+        Check(Math.Abs(mover.X - 150) < 0.01, "shape: Ctrl+Y reaplica o move");
+        state.Undo(); // volta p/ origem p/ próximos passos
+
+        // Move do círculo + undo.
+        var mc = state.Circles[^1];
+        surf.SimulateObjectDrag(new Pt(720, 140), new Pt(740, 160));
+        Check(Math.Abs(mc.X - 620) < 0.01 && Math.Abs(mc.Y - 120) < 0.01, "shape: círculo move");
+        state.Undo();
+        Check(Math.Abs(mc.X - 600) < 0.01 && Math.Abs(mc.Y - 100) < 0.01, "shape: undo volta círculo");
+
+        // Delete genérico + undo/redo (retângulo e círculo).
+        surf.SimulateSelectTap(new Pt(100, 150));
+        Check(state.DeleteSelectedObject(), "shape: Delete remove retângulo");
+        Check(state.RectangleCount == 3 && !state.HasSelection, "shape: remoção limpa seleção");
+        state.Undo();
+        Check(state.RectangleCount == 4, "shape: undo restaura retângulo");
+        state.Redo();
+        Check(state.RectangleCount == 3, "shape: redo reaplica remoção");
+        state.Undo();
+        surf.SimulateSelectTap(new Pt(720, 140));
+        Check(state.DeleteSelectedObject(), "shape: Delete remove círculo");
+        Check(state.CircleCount == 0, "shape: zero círculos");
+        state.Undo();
+        Check(state.CircleCount == 1, "shape: undo restaura círculo");
+
+        // Borracha apaga formas pelo contorno (+ stroke no mesmo gesto = um só undo).
+        var stE = new AppState();
+        var suE = MakeSurface(stE);
+        stE.SetTool(ToolKind.Rectangle);
+        suE.SimulateShapeDrag(new Pt(100, 100), new Pt(300, 200));
+        stE.AddFreehand(new List<Pt> { new(90, 90), new(310, 210) }, 4f);
+        int erased = stE.EraseSegment(new Pt(90, 90), new Pt(310, 210));
+        Check(erased == 2 && stE.StrokeCount == 0 && stE.RectangleCount == 0,
+            $"shape: borracha pega stroke+ret ({erased})");
+        stE.Undo();
+        Check(stE.StrokeCount == 1 && stE.RectangleCount == 1,
+            "shape: um Ctrl+Z restaura os dois");
+        stE.Redo();
+        Check(stE.StrokeCount == 0 && stE.RectangleCount == 0, "shape: Ctrl+Y reaplica");
+        stE.Undo(); // restaura p/ próximos passos
+
+        // Segmento só no interior vazio (sem strokes por perto): não apaga.
+        var stI = new AppState();
+        var suI = MakeSurface(stI);
+        stI.SetTool(ToolKind.Rectangle);
+        suI.SimulateShapeDrag(new Pt(100, 100), new Pt(300, 200));
+        Check(stI.EraseSegment(new Pt(150, 130), new Pt(250, 170)) == 0
+            && stI.RectangleCount == 1, "shape: interior vazio não apaga");
+        Check(stI.EraseSegment(new Pt(50, 50), new Pt(80, 80)) == 0
+            && stI.RectangleCount == 1, "shape: fora não apaga");
+
+        // Círculo pelo contorno + undo; apagar a selecionada limpa a seleção.
+        stE.SetTool(ToolKind.Circle);
+        suE.SimulateShapeDrag(new Pt(700, 700), new Pt(800, 800));
+        Check(stE.CircleCount == 1, "shape: círculo p/ borracha cria");
+        Check(stE.EraseSegment(new Pt(700, 750), new Pt(800, 750)) == 1
+            && stE.CircleCount == 0, "shape: borracha cruza o contorno do círculo");
+        stE.Undo();
+        Check(stE.CircleCount == 1, "shape: undo restaura círculo");
+        stE.SetTool(ToolKind.Select);
+        Check(suE.SimulateSelectTap(new Pt(100, 150)) == "rectangle", "shape: seleciona p/ apagar");
+        Check(stE.EraseSegment(new Pt(90, 90), new Pt(310, 210)) == 2 && !stE.HasSelection,
+            "shape: apagar selecionada limpa seleção");
+
+        // Z-order: forma mais nova vence; texto mais novo vence forma; captura
+        // (sempre abaixo no _screens) perde p/ forma e texto que a cubram.
+        var st2 = new AppState();
+        var su2 = MakeSurface(st2);
+        st2.SetTool(ToolKind.Rectangle);
+        su2.SimulateShapeDrag(new Pt(100, 100), new Pt(300, 300));
+        st2.SetTool(ToolKind.Circle);
+        su2.SimulateShapeDrag(new Pt(100, 100), new Pt(300, 300));
+        st2.SetTool(ToolKind.Select);
+        Check(su2.SimulateSelectTap(new Pt(200, 100)) == "circle", "shape: círculo mais novo vence ret");
+        st2.SetTool(ToolKind.Rectangle);
+        su2.SimulateShapeDrag(new Pt(100, 100), new Pt(300, 300));
+        st2.SetTool(ToolKind.Select);
+        Check(su2.SimulateSelectTap(new Pt(200, 100)) == "rectangle", "shape: retângulo mais novo vence circ");
+        var (tw, th) = TextMeasure.Measure("Texto forma", TextFonts.PreferredFamily, 20f);
+        st2.AddText("Texto forma", 150, 200, 20f, TextFonts.PreferredFamily, new Rgba(0, 0, 0), tw, th);
+        Check(su2.SimulateSelectTap(new Pt(160, 205)) == "text", "shape: texto mais novo vence forma");
+        st2.AddScreen(new byte[4 * 8 * 6], 8, 6, new RectD(100, 50, 200, 200));
+        Check(su2.SimulateSelectTap(new Pt(200, 100)) == "rectangle", "shape: forma vence captura abaixo");
+        Check(su2.SimulateSelectTap(new Pt(160, 205)) == "text", "shape: texto vence captura abaixo");
+
+        // Export inclui as formas (contorno escurece pixel; interior segue claro).
+        var white = new byte[4 * 100 * 100];
+        for (int i = 0; i < white.Length; i++) white[i] = 255;
+        var baseBmp = CaptureExport.ToBitmapSource(white, 100, 100);
+        var rr = new RectangleObject(999, 10, 10, 60, 40, new Rgba(0, 0, 0), 4f);
+        var comp = CaptureExport.CompositeModel(baseBmp, 0, 0, [], null, null, [rr], null);
+        var px = new byte[4 * 100 * 100];
+        comp.CopyPixels(new Int32Rect(0, 0, 100, 100), px, 400, 0);
+        static byte Lum(byte[] p, int x, int y) =>
+            (byte)((p[4 * (y * 100 + x)] + p[4 * (y * 100 + x) + 1] + p[4 * (y * 100 + x) + 2]) / 3);
+        Check(Lum(px, 40, 10) < 100, "shape: contorno do retângulo no composto");
+        Check(Lum(px, 40, 30) > 200, "shape: interior do retângulo intacto");
+        var cc = new CircleObject(1000, 10, 50, 60, 40, new Rgba(0, 0, 0), 4f);
+        var comp2 = CaptureExport.CompositeModel(baseBmp, 0, 0, [], null, null, null, [cc]);
+        var px2 = new byte[4 * 100 * 100];
+        comp2.CopyPixels(new Int32Rect(0, 0, 100, 100), px2, 400, 0);
+        Check(Lum(px2, 40, 50) < 100, "shape: contorno do círculo no composto");
+        Check(Lum(px2, 40, 70) > 200, "shape: centro do círculo intacto");
+
+        // Multi-monitor/DPI: frame com origem negativa + escala 1.5.
+        var st3 = new AppState();
+        var su3 = new InkSurface();
+        su3.Frame = new MonitorFrame(-1920, 160, 1.5f, 1.5f);
+        su3.Attach(st3);
+        su3.Measure(new Size(1920, 1080));
+        su3.Arrange(new Rect(0, 0, 1920, 1080));
+        st3.SetTool(ToolKind.Rectangle);
+        su3.SimulateShapeDrag(new Pt(100, 100), new Pt(300, 200));
+        Check(st3.RectangleCount == 1, "shape: secundário cria");
+        var mr = st3.Rectangles[^1];
+        Check(Math.Abs(mr.X - (-1920 + 150)) < 0.01 && Math.Abs(mr.Y - (160 + 150)) < 0.01
+            && Math.Abs(mr.WidthPx - 300) < 0.01 && Math.Abs(mr.HeightPx - 150) < 0.01,
+            $"shape: global negativo + escala ({mr.X:F0},{mr.Y:F0} {mr.WidthPx:F0}x{mr.HeightPx:F0})");
+        Check(Math.Abs(mr.StrokeWidthPx - st3.Presets[ToolKind.Rectangle].WidthDip * 1.5f) < 0.01,
+            "shape: espessura preservada na escala do monitor");
+
+        // Hotkeys: R/O isolados trocam, com Ctrl não; V segue Select.
+        Check(HotkeyRouter.Resolve(Key.R, ModifierKeys.None) == HotkeyAction.ToolRectangle, "R isolado → Rectangle");
+        Check(HotkeyRouter.Resolve(Key.O, ModifierKeys.None) == HotkeyAction.ToolCircle, "O isolado → Circle");
+        Check(HotkeyRouter.Resolve(Key.V, ModifierKeys.None) == HotkeyAction.ToolSelect, "V segue Select");
+        Check(HotkeyRouter.Resolve(Key.R, ModifierKeys.Control) == HotkeyAction.None, "Ctrl+R não troca ferramenta");
+        Check(HotkeyRouter.Resolve(Key.O, ModifierKeys.Control) == HotkeyAction.None, "Ctrl+O não troca ferramenta");
+        Check(HotkeyRouter.Resolve(Key.C, ModifierKeys.None) == HotkeyAction.Clear, "C segue Clear");
+        Check(HotkeyRouter.Resolve(Key.S, ModifierKeys.None) == HotkeyAction.ToolArrow, "S segue Arrow");
     }
 
     // Bombeia a fila do dispatcher por ms reais (timers de UI disparam).

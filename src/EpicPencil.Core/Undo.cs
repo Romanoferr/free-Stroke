@@ -15,6 +15,9 @@ public interface IDocCommand
     IReadOnlyList<ScreenObject> AffectedScreens => Array.Empty<ScreenObject>();
     // Textos tocados. Default vazio: comandos de stroke/captura não precisam mudar.
     IReadOnlyList<TextObject> AffectedTexts => Array.Empty<TextObject>();
+    // Formas tocadas. Default vazio: comandos antigos não precisam mudar.
+    IReadOnlyList<RectangleObject> AffectedRectangles => Array.Empty<RectangleObject>();
+    IReadOnlyList<CircleObject> AffectedCircles => Array.Empty<CircleObject>();
 }
 
 public sealed class AddStrokeCommand : IDocCommand
@@ -66,14 +69,17 @@ public sealed class EraseStrokesCommand : IDocCommand
     }
 }
 
-public sealed class ClearAllCommand : IDocCommand
-{
+public sealed class ClearAllCommand : IDocCommand{
     private readonly List<Stroke> _snapshot;
     private readonly List<TextObject> _textSnapshot;
+    private readonly List<RectangleObject> _rectSnapshot;
+    private readonly List<CircleObject> _circleSnapshot;
     public ClearAllCommand(Document doc)
     {
         _snapshot = new List<Stroke>(doc.Strokes);
         _textSnapshot = new List<TextObject>(doc.Texts);
+        _rectSnapshot = new List<RectangleObject>(doc.Rectangles);
+        _circleSnapshot = new List<CircleObject>(doc.Circles);
     }
     public int RetainedPoints
     {
@@ -82,26 +88,102 @@ public sealed class ClearAllCommand : IDocCommand
             int n = 0;
             foreach (var s in _snapshot) n += s.PointCount;
             foreach (var t in _textSnapshot) n += t.Content.Length;
+            n += _rectSnapshot.Count + _circleSnapshot.Count;
             return n;
         }
     }
     public IReadOnlyList<Stroke> Affected => _snapshot;
     public IReadOnlyList<TextObject> AffectedTexts => _textSnapshot;
+    public IReadOnlyList<RectangleObject> AffectedRectangles => _rectSnapshot;
+    public IReadOnlyList<CircleObject> AffectedCircles => _circleSnapshot;
     public void Do(Document doc)
     {
         doc.Clear();
         foreach (var t in _textSnapshot) doc.RemoveText(t);
+        foreach (var r in _rectSnapshot) doc.RemoveRectangle(r);
+        foreach (var c in _circleSnapshot) doc.RemoveCircle(c);
     }
     public void Undo(Document doc)
     {
         foreach (var s in _snapshot) doc.Add(s);
         foreach (var t in _textSnapshot) doc.AddText(t);
+        foreach (var r in _rectSnapshot) doc.AddRectangle(r);
+        foreach (var c in _circleSnapshot) doc.AddCircle(c);
+    }
+}
+
+// Agrupa comandos atômicos num único passo de undo (ex. borracha que pega
+// strokes E textos no mesmo gesto). Do na ordem, Undo na reversa.
+public sealed class CompositeCommand : IDocCommand
+{
+    private readonly IReadOnlyList<IDocCommand> _cmds;
+    public CompositeCommand(params IDocCommand[] cmds) => _cmds = cmds;
+    public int RetainedPoints
+    {
+        get
+        {
+            int n = 0;
+            foreach (var c in _cmds) n += c.RetainedPoints;
+            return n;
+        }
+    }
+    public IReadOnlyList<Stroke> Affected
+    {
+        get
+        {
+            var all = new List<Stroke>();
+            foreach (var c in _cmds) all.AddRange(c.Affected);
+            return all;
+        }
+    }
+    public IReadOnlyList<ScreenObject> AffectedScreens
+    {
+        get
+        {
+            var all = new List<ScreenObject>();
+            foreach (var c in _cmds) all.AddRange(c.AffectedScreens);
+            return all;
+        }
+    }
+    public IReadOnlyList<TextObject> AffectedTexts
+    {
+        get
+        {
+            var all = new List<TextObject>();
+            foreach (var c in _cmds) all.AddRange(c.AffectedTexts);
+            return all;
+        }
+    }
+    public IReadOnlyList<RectangleObject> AffectedRectangles
+    {
+        get
+        {
+            var all = new List<RectangleObject>();
+            foreach (var c in _cmds) all.AddRange(c.AffectedRectangles);
+            return all;
+        }
+    }
+    public IReadOnlyList<CircleObject> AffectedCircles
+    {
+        get
+        {
+            var all = new List<CircleObject>();
+            foreach (var c in _cmds) all.AddRange(c.AffectedCircles);
+            return all;
+        }
+    }
+    public void Do(Document doc)
+    {
+        foreach (var c in _cmds) c.Do(doc);
+    }
+    public void Undo(Document doc)
+    {
+        for (int i = _cmds.Count - 1; i >= 0; i--) _cmds[i].Undo(doc);
     }
 }
 
 public sealed class UndoStack
-{
-    public const int MaxCommands = 50;
+{    public const int MaxCommands = 50;
     public const int MaxRetainedPoints = 250_000;
 
     private readonly List<IDocCommand> _undo = new();
