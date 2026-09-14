@@ -38,6 +38,7 @@ internal static class ShellSelfTest
         RunMonitors(Check);
         RunRebuild(Check);
         RunToolbarUI(Check);
+        RunExportHotkeys(Check);
         Console.WriteLine(failures.Count == 0 ? "SHELL SELFTEST OK" : $"FALHOU: {failures.Count}");
         return failures.Count == 0 ? 0 : 1;
     }
@@ -409,6 +410,54 @@ internal static class ShellSelfTest
         toolbar.SuppressCloseShutdown = true;
         toolbar.Close();
         foreach (var o in overlays) { o.SuppressCloseShutdown = true; o.Close(); }
+    }
+
+    private static void RunExportHotkeys(Action<bool, string> Check)
+    {
+        // REQ3: matriz C/S × Ctrl — tecla isolada ≠ combinação (uma ação, sem duplicata).
+        Check(HotkeyRouter.Resolve(Key.C, ModifierKeys.None) == HotkeyAction.Clear, "C isolado → Clear");
+        Check(HotkeyRouter.Resolve(Key.C, ModifierKeys.Control) == HotkeyAction.CopyCapture, "Ctrl+C → CopyCapture (não Clear)");
+        Check(HotkeyRouter.Resolve(Key.S, ModifierKeys.None) == HotkeyAction.ToolArrow, "S isolado → Arrow (inalterado)");
+        Check(HotkeyRouter.Resolve(Key.S, ModifierKeys.Control) == HotkeyAction.SaveCapture, "Ctrl+S → SaveCapture (não Arrow)");
+        Check(HotkeyRouter.Resolve(Key.Z, ModifierKeys.Control) == HotkeyAction.Undo, "Ctrl+Z → Undo");
+        Check(HotkeyRouter.Resolve(Key.Y, ModifierKeys.Control) == HotkeyAction.Redo, "Ctrl+Y → Redo");
+        Check(HotkeyRouter.Resolve(Key.P, ModifierKeys.Control) == HotkeyAction.None, "Ctrl+P não troca ferramenta");
+        Check(HotkeyRouter.Resolve(Key.H, ModifierKeys.Control) == HotkeyAction.None, "Ctrl+H não troca ferramenta");
+        Check(HotkeyRouter.Resolve(Key.C, ModifierKeys.Shift) == HotkeyAction.None, "Shift+C não limpa");
+        Check(HotkeyRouter.Resolve(Key.S, ModifierKeys.Alt) == HotkeyAction.None, "Alt+S não troca ferramenta");
+        Check(HotkeyRouter.Resolve(Key.H, ModifierKeys.None) == HotkeyAction.ToolHighlighter, "H isolado → Highlighter");
+
+        // REQ4: "seleção atual" = ScreenObject com Id == SelectedScreenId.
+        var state = new AppState();
+        Check(CaptureExport.TryGetSelectedScreen(state) is null, "sem captura → sem seleção");
+        var bytes = new byte[4 * 8 * 6];
+        for (int i = 0; i < bytes.Length; i++) bytes[i] = (byte)(i % 251);
+        var screen = state.AddScreen(bytes, 8, 6, new RectD(100, 100, 8, 6));
+        Check(screen is not null && ReferenceEquals(CaptureExport.TryGetSelectedScreen(state), screen),
+            "captura nova auto-selecionada = seleção atual");
+        state.MoveScreen(screen!.Id, 300, 300); // mover não troca os pixels
+        var sel = CaptureExport.TryGetSelectedScreen(state);
+        Check(sel is not null && sel.Bgra.SequenceEqual(bytes), "seleção movida preserva pixels originais");
+        state.SelectScreen(null);
+        Check(CaptureExport.TryGetSelectedScreen(state) is null, "desselecionar → sem seleção");
+
+        // REQ5: tela inteira = união dos bounds (negativos OK, multi-monitor).
+        var layout = new List<MonitorInfo>
+        {
+            new(0, IntPtr.Zero, "Prim", 0, 0, 1920, 1080, 0, 0, 1920, 1040, true, 1, 1),
+            new(1, IntPtr.Zero, "Sec", -1920, 100, 1920, 1080, -1920, 100, 1920, 1040, false, 1.5, 1.5),
+        };
+        var full = CaptureExport.GetFullVirtualRect(layout);
+        Check(Math.Abs(full.X - -1920) < 0.01 && Math.Abs(full.Y) < 0.01 &&
+            Math.Abs(full.Width - 3840) < 0.01 && Math.Abs(full.Height - 1180) < 0.01,
+            $"união virtual 3840x1180@(-1920,0) (tem {full.Width:F0}x{full.Height:F0}@({full.X:F0},{full.Y:F0}))");
+
+        // Bitmap + PNG a partir dos bytes da seleção (mesmo caminho do Ctrl+C/S).
+        var bmp = CaptureExport.ToBitmapSource(bytes, 8, 6);
+        Check(bmp.PixelWidth == 8 && bmp.PixelHeight == 6, "BitmapSource 8x6 da seleção");
+        var png = CaptureExport.EncodePng(bmp);
+        byte[] sig = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+        Check(png.Length > 8 && png.Take(8).SequenceEqual(sig), $"PNG válido ({png.Length} bytes, assinatura OK)");
     }
 
     // Bombeia a fila do dispatcher por ms reais (timers de UI disparam).

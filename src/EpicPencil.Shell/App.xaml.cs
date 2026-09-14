@@ -99,6 +99,7 @@ public partial class App : Application
             _toolbar.Owner = primary;
             if (!_toolbar.IsVisible) _toolbar.Show();
             var flow = new ScreenCaptureFlow(_toolbar);
+            _toolbar.ExportFlow = flow; // Ctrl+C/Ctrl+S sem seleção (mesmo flow)
             foreach (var overlay in _overlays)
                 overlay.SurfaceControl.CaptureFlow = flow;
         }

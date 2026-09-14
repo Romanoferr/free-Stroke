@@ -53,6 +53,11 @@ public partial class ToolbarWindow : Window
     public bool SuppressCloseShutdown { get; set; }
     public bool IsCollapsed => _collapsed;
 
+    // Flow de captura p/ Ctrl+C/Ctrl+S sem seleção (BitBlt one-shot sob demanda).
+    // O App injeta o ScreenCaptureFlow compartilhado; fallback cria um próprio
+    // (mesma classe, sem segundo sistema) p/ construção direta (ex. self-test).
+    public IScreenCaptureFlow? ExportFlow { get; set; }
+
     public ToolbarWindow(AppState state, IReadOnlyList<OverlayWindow> overlays, OverlayWindow primary)
     {
         InitializeComponent();
@@ -190,28 +195,91 @@ public partial class ToolbarWindow : Window
         foreach (var overlay in _overlays) overlay.ReassertFront();
     }
 
+    // Despacho único de hotkeys LOCAIS via HotkeyRouter (REQ3): Ctrl+C/Ctrl+S
+    // nunca ativam C/S, teclas com modificador nunca trocam ferramenta, e cada
+    // gesto gera exatamente UMA ação (e.Handled = true).
     private void OnKey(object sender, KeyEventArgs e)
     {
-        if (e.Key == Key.P) _state.SetTool(ToolKind.Pen);
-        else if (e.Key == Key.B) _state.SetTool(ToolKind.Pencil);
-        else if (e.Key == Key.H && !Keyboard.Modifiers.HasFlag(ModifierKeys.Control)) _state.SetTool(ToolKind.Highlighter);
-        else if (e.Key == Key.L) _state.SetTool(ToolKind.Line);
-        else if (e.Key == Key.S) _state.SetTool(ToolKind.Arrow);
-        else if (e.Key == Key.V) _state.SetTool(ToolKind.Select);
-        else if (e.Key == Key.Delete) _state.DeleteSelectedScreen();
-        else if (e.Key == Key.E) _state.SetTool(ToolKind.EraserStroke);
-        else if (e.Key == Key.D1) _state.SetActiveWidthPreset(0);
-        else if (e.Key == Key.D2) _state.SetActiveWidthPreset(1);
-        else if (e.Key == Key.D3) _state.SetActiveWidthPreset(2);
-        else if (e.Key == Key.C) _state.Clear();
-        else if (e.Key == Key.F9) ToggleInkMode(); // local: sem conflito global
-        else if (e.Key == Key.PageUp) ToggleInkMode(); // funciona recolhida (mesma janela)
-        else if (e.Key == Key.OemQuotes) ToggleInkMode(); // (') alternativa ao PgUp
-        else if (e.Key == Key.Escape) HideInk(); // pânico local: oculta e solta o mouse
-        else if (e.Key == Key.Z && Keyboard.Modifiers.HasFlag(ModifierKeys.Control)) _state.Undo();
-        else if (e.Key == Key.Y && Keyboard.Modifiers.HasFlag(ModifierKeys.Control)) _state.Redo();
-        else return;
+        switch (HotkeyRouter.Resolve(e.Key, Keyboard.Modifiers))
+        {
+            case HotkeyAction.ToolPen: _state.SetTool(ToolKind.Pen); break;
+            case HotkeyAction.ToolPencil: _state.SetTool(ToolKind.Pencil); break;
+            case HotkeyAction.ToolHighlighter: _state.SetTool(ToolKind.Highlighter); break;
+            case HotkeyAction.ToolLine: _state.SetTool(ToolKind.Line); break;
+            case HotkeyAction.ToolArrow: _state.SetTool(ToolKind.Arrow); break;
+            case HotkeyAction.ToolSelect: _state.SetTool(ToolKind.Select); break;
+            case HotkeyAction.ToolEraser: _state.SetTool(ToolKind.EraserStroke); break;
+            case HotkeyAction.WidthPreset0: _state.SetActiveWidthPreset(0); break;
+            case HotkeyAction.WidthPreset1: _state.SetActiveWidthPreset(1); break;
+            case HotkeyAction.WidthPreset2: _state.SetActiveWidthPreset(2); break;
+            case HotkeyAction.Clear: _state.Clear(); break;
+            case HotkeyAction.DeleteScreen: _state.DeleteSelectedScreen(); break;
+            case HotkeyAction.ToggleInkMode: ToggleInkMode(); break;
+            case HotkeyAction.HideInk: HideInk(); break;
+            case HotkeyAction.Undo: _state.Undo(); break;
+            case HotkeyAction.Redo: _state.Redo(); break;
+            case HotkeyAction.CopyCapture: _ = CopyCaptureAsync(); break;
+            case HotkeyAction.SaveCapture: _ = SaveCaptureAsync(); break;
+            case HotkeyAction.None:
+            default: return;
+        }
         e.Handled = true;
+    }
+
+    // Ctrl+C: com seleção → bytes do ScreenObject (pixels exatos, sem re-BitBlt);
+    // sem seleção → BitBlt one-shot da tela virtual (toolbar escondida pelo flow).
+    // Nunca move/apaga/altera a seleção nem troca a ferramenta.
+    private async Task CopyCaptureAsync()
+    {
+        try
+        {
+            var sel = CaptureExport.TryGetSelectedScreen(_state);
+            if (sel is not null)
+            {
+                CaptureExport.CopyToClipboard(
+                    CaptureExport.ToBitmapSource(sel.Bgra, sel.PixelWidth, sel.PixelHeight));
+                return;
+            }
+            var flow = ExportFlow ??= new ScreenCaptureFlow(this);
+            var rect = CaptureExport.GetFullVirtualRect(MonitorLayout.Enumerate());
+            var img = await flow.CaptureRegionGlobalPxAsync(rect);
+            if (img is null)
+            {
+                Log.Warn("Ctrl+C cancelado: captura da tela falhou");
+                return;
+            }
+            CaptureExport.CopyToClipboard(
+                CaptureExport.ToBitmapSource(img.Bgra, img.PixelWidth, img.PixelHeight));
+        }
+        catch (Exception ex) { Log.Error("falha no Ctrl+C", ex); }
+    }
+
+    // Ctrl+S: mesma regra de região do Ctrl+C; PNG via diálogo padrão do Windows.
+    private async Task SaveCaptureAsync()
+    {
+        try
+        {
+            var sel = CaptureExport.TryGetSelectedScreen(_state);
+            if (sel is not null)
+            {
+                CaptureExport.SaveWithDialog(this,
+                    CaptureExport.ToBitmapSource(sel.Bgra, sel.PixelWidth, sel.PixelHeight),
+                    "captura-selecao.png");
+                return;
+            }
+            var flow = ExportFlow ??= new ScreenCaptureFlow(this);
+            var rect = CaptureExport.GetFullVirtualRect(MonitorLayout.Enumerate());
+            var img = await flow.CaptureRegionGlobalPxAsync(rect);
+            if (img is null)
+            {
+                Log.Warn("Ctrl+S cancelado: captura da tela falhou");
+                return;
+            }
+            CaptureExport.SaveWithDialog(this,
+                CaptureExport.ToBitmapSource(img.Bgra, img.PixelWidth, img.PixelHeight),
+                "captura.png");
+        }
+        catch (Exception ex) { Log.Error("falha no Ctrl+S", ex); }
     }
 
     private void RefreshStatus()

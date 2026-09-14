@@ -76,7 +76,9 @@ arrastável pelo grip (⋮⋮) para qualquer posição da tela:
 - Mostrar/ocultar também pelo dot verde/laranja da barra recolhida e pelos
   atalhos locais **PgUp**, **`'`** (aspas) ou **F9** — funcionam com a toolbar
   recolhida (mesma janela); **Esc** oculta e libera o mouse.
-- Hotkeys locais inalterados (P/B/H/L/S/V/E, C, Ctrl+Z/Y).
+- Hotkeys locais inalterados (P/B/H/L/S/V/E, C, Ctrl+Z/Y) + exportação da
+  captura: **Ctrl+C** copia (seleção ou tela inteira) e **Ctrl+S** salva PNG
+  (diálogo padrão). Tecla isolada ≠ combinação (C≠Ctrl+C, S≠Ctrl+S).
 
 ## Multi-monitor
 
