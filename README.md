@@ -155,11 +155,26 @@ Select-String -Path src/EpicPencil.Core/*.cs -Pattern "System\.Windows|DllImport
 ## Build de produção
 
 ```powershell
+# Publicação reproduzível (limpa, builda, testa, publica self-contained
+# win-x64 single-file em dist/win-x64/EpicPencil-<versão>/ + .zip):
+powershell -ExecutionPolicy Bypass -File scripts\publish-win-x64.ps1
+
+# Instalador (requer Inno Setup 6+, após o publish):
+iscc installer\inno\setup.iss
+# saída: installer/output/EpicPencil-Setup-<versão>.exe
+```
+
+Estratégia completa (artefatos, versionamento, instalação, requisitos,
+checklist de máquina limpa, runbook de nova versão): `docs/DISTRIBUTION.md`.
+
+Manual (equivalente ao que o script faz no passo 5):
+
+```powershell
 # Release local (solução):
 dotnet build EpicPencil.sln -c Release --nologo -v minimal
 
-# Publicar o app Windows autocontido ou dependente do runtime:
-dotnet publish src/EpicPencil.Shell/EpicPencil.Shell.csproj -c Release -o publish/
+# Publicar o app Windows autocontido (não exige runtime na máquina de destino):
+dotnet publish src/EpicPencil.Shell/EpicPencil.Shell.csproj -c Release -r win-x64 --self-contained true -o dist/manual/
 ```
 
 Não há instalador (`installer/inno/setup.iss` citado nos docs **não existe** no

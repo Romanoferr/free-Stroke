@@ -1,0 +1,19 @@
+<Project>
+  <!-- Fonte única de verdade da versão (Major.Minor.Patch).
+       Para lançar uma nova versão: edite <Version> aqui e o
+       #define AppVersion em installer/inno/setup.iss (o script
+       scripts/publish-win-x64.ps1 falha se divergirem). -->
+  <PropertyGroup>
+    <Version>0.1.0</Version>
+    <AssemblyVersion>0.1.0.0</AssemblyVersion>
+    <FileVersion>0.1.0.0</FileVersion>
+    <InformationalVersion>0.1.0</InformationalVersion>
+    <!-- SDK anexa o SHA do git ao ProductVersion por padrao; desligado para
+         a versao anunciada ser exatamente Major.Minor.Patch em todo lugar. -->
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <Company>Epic Pencil</Company>
+    <Product>Epic Pencil</Product>
+    <Copyright>Copyright © 2026 Epic Pencil</Copyright>
+    <Description>Anotação offline-first sobre a tela (Windows x64, WPF)</Description>
+  </PropertyGroup>
+</Project>

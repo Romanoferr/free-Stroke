@@ -24,6 +24,16 @@
     <!-- Multi-monitor com DPI misto: cada overlay mede sua escala real
          (VisualTreeHelper.GetDpi) em vez de assumir o DPI do primário. -->
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <!-- Padrões de publicação (valem só no `dotnet publish`, nunca no
+         build/run do dia a dia; RID e self-contained vêm do script
+         scripts/publish-win-x64.ps1):
+         - Single-file: 1 exe autocontido; recursos WPF (Resource/pack URI)
+           continuam embutidos no assembly (validado via selftest).
+         - Trimming DESLIGADO de propósito: WPF + reflection + P/Invoke
+           exigem compatibilidade máxima (prioridade do projeto). -->
+    <PublishSingleFile>true</PublishSingleFile>
+    <PublishTrimmed>false</PublishTrimmed>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
   </PropertyGroup>
 
 </Project>
